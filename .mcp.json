@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "notebooklm": {
+      "command": "npx",
+      "args": ["notebooklm-mcp@latest"]
+    },
+    "chrome-devtools": {
+      "command": "npx",
+      "args": ["-y", "chrome-devtools-mcp@latest"]
+    },
+    "agentation": {
+      "command": "npx",
+      "args": ["-y", "agentation-mcp@latest", "server"]
+    }
+  }
+}

@@ -1,0 +1,104 @@
+# nginx site config for ADIA ERP.
+#
+# Replace erp.example.com with your real domain. Issue Let's Encrypt
+# certificates with certbot before enabling the 443 server block:
+#   sudo certbot --nginx -d erp.example.com
+#
+# Layout:
+#   /                    → static frontend (apps/frontend/dist)
+#   /api/                → backend on 127.0.0.1:3001
+#   /api/telegram/webhook → backend, rate-limited zone
+#   /api/auth/login      → backend, rate-limited zone
+#
+# Save as /etc/nginx/sites-available/adia-erp and `ln -s` to sites-enabled,
+# then `sudo nginx -t && sudo systemctl reload nginx`.
+
+# --- Rate limit zones (top-level, in /etc/nginx/nginx.conf or here under http{}) ---
+# limit_req_zone $binary_remote_addr zone=adia_login:10m   rate=10r/m;
+# limit_req_zone $binary_remote_addr zone=adia_webhook:10m rate=60r/m;
+# limit_req_zone $binary_remote_addr zone=adia_api:10m     rate=120r/s;
+
+upstream adia_backend {
+  server 127.0.0.1:3001;
+  keepalive 16;
+}
+
+# Force HTTPS
+server {
+  listen 80;
+  listen [::]:80;
+  server_name erp.example.com;
+  return 301 https://$host$request_uri;
+}
+
+server {
+  listen 443 ssl http2;
+  listen [::]:443 ssl http2;
+  server_name erp.example.com;
+
+  ssl_certificate     /etc/letsencrypt/live/erp.example.com/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/erp.example.com/privkey.pem;
+  ssl_protocols TLSv1.2 TLSv1.3;
+  ssl_ciphers HIGH:!aNULL:!MD5;
+
+  # Security headers (backend also sets some via helmet — defence in depth)
+  add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+  add_header X-Frame-Options "DENY" always;
+
+  client_max_body_size 2m;
+
+  # --- Static frontend ---
+  root /opt/adia-erp/apps/frontend/dist;
+  index index.html;
+
+  # cache static assets aggressively, never cache index.html
+  location ~* \.(?:js|css|woff2?|svg|png|ico)$ {
+    expires 1y;
+    add_header Cache-Control "public, immutable";
+    try_files $uri =404;
+  }
+  location = /index.html {
+    add_header Cache-Control "no-cache, no-store, must-revalidate";
+  }
+  location / {
+    try_files $uri $uri/ /index.html;
+  }
+
+  # --- Backend API ---
+  location /api/auth/login {
+    limit_req zone=adia_login burst=5 nodelay;
+    proxy_pass http://adia_backend;
+    include /etc/nginx/proxy_params;
+  }
+
+  location /api/telegram/webhook {
+    limit_req zone=adia_webhook burst=20 nodelay;
+    proxy_pass http://adia_backend;
+    include /etc/nginx/proxy_params;
+  }
+
+  location /api/ {
+    limit_req zone=adia_api burst=60 nodelay;
+    proxy_pass http://adia_backend;
+    include /etc/nginx/proxy_params;
+    # SSE / long responses if ever needed
+    proxy_buffering off;
+    proxy_read_timeout 60s;
+  }
+
+  location = /health {
+    proxy_pass http://adia_backend;
+    include /etc/nginx/proxy_params;
+    access_log off;
+  }
+}
+
+# /etc/nginx/proxy_params (create if missing):
+#   proxy_set_header Host              $host;
+#   proxy_set_header X-Real-IP         $remote_addr;
+#   proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+#   proxy_set_header X-Forwarded-Proto $scheme;
+#   proxy_http_version 1.1;
+#   proxy_set_header Connection        "";

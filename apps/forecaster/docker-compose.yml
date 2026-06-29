@@ -1,0 +1,32 @@
+# =============================================================================
+# Prophet forecaster sidecar — standalone compose file.
+#
+# Run locally:
+#   cd apps/forecaster
+#   docker compose up --build forecaster
+#
+# Notes:
+#   - Bound to 127.0.0.1 only — the sidecar must NOT be reachable from the
+#     public internet; the Node backend talks to it over the loopback (or the
+#     compose internal network in production).
+#   - `env_file` points to the repo-root .env. The only key actually read by
+#     the sidecar is FORECASTER_SHARED_SECRET.
+#   - restart: unless-stopped — Prophet model fits are CPU-bound but bounded
+#     to ~10 minutes per nightly cron run; a crash should not stay down.
+# =============================================================================
+services:
+  forecaster:
+    build: .
+    image: adia-forecaster:latest
+    container_name: adia-forecaster
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - ../../.env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://127.0.0.1:8000/healthz').status == 200 else sys.exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

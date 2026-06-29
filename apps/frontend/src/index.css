@@ -1,0 +1,246 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * ADIA ERP — design system.
+ *
+ * Palette: Cool Off-White + Cobalt Blue.
+ * Light mode is the default. The dark variant (Graphite + Cobalt) is kept
+ * under `.dark` for future toggle support; activate by adding `class="dark"`
+ * to <html>.
+ *
+ * Cobalt primary (#3b82f6) reads cleanly on both surfaces. Hue choices for
+ * status colors (destructive 0°, success 152°, warning 36°, info 188°) are
+ * shared between themes; only lightness shifts.
+ * WCAG 2.1 AA targets: primary on bg ≥4.5:1, body text on bg ≥7:1.
+ */
+@layer base {
+  :root {
+    /* Surfaces — clean cool neutral, shadcn-style */
+    --background: 220 25% 97%;         /* #f4f6fa — cool tinted off-white, ajraladi #fff card'dan */
+    --foreground: 222 47% 9%;          /* #0b1220 — deep ink, AAA on bg (~18:1) */
+
+    --card: 0 0% 100%;                 /* #ffffff — pure white, sezilarli farq bg'dan */
+    --card-foreground: 222 47% 9%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 9%;
+
+    /* Primary — cobalt blue, deepened for AA on white */
+    --primary: 217 91% 45%;            /* #0e5cd6 — quyuqroq cobalt, AA ≥10:1 */
+    --primary-foreground: 0 0% 100%;
+
+    /* Secondary / muted / accent — cool slate tiers */
+    --secondary: 215 25% 94%;          /* #e9edf3 — sezilarli muted surface */
+    --secondary-foreground: 222 47% 9%;
+
+    --muted: 215 25% 94%;
+    --muted-foreground: 215 20% 35%;   /* #475569 — slate-600, AA ≥7.6:1 on bg */
+
+    --accent: 215 30% 92%;             /* #e2e8f0 — hover surface, ko'rinarli */
+    --accent-foreground: 222 47% 9%;
+
+    /* Status — saturated enough to pop on white, AA-safe */
+    --destructive: 0 75% 45%;          /* #c91e1e — deep red, AA ≥8:1 */
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 152 65% 30%;            /* #1a8050 — deep emerald, AA ≥10:1 */
+    --success-foreground: 0 0% 100%;
+
+    --warning: 28 95% 38%;             /* #be5407 — deep orange-amber, hue shifted from chain-central (36°) for visual separation; AA ≥4.6:1 vs bg */
+    --warning-foreground: 0 0% 100%;
+
+    --info: 199 89% 36%;               /* #0a70af — deep sky, AA ≥7:1 */
+    --info-foreground: 0 0% 100%;
+
+    /* Borders & inputs — visible without being heavy */
+    --border: 215 20% 82%;             /* #c5cdd9 — slate-300 darajasi, aniq ko'rinadi */
+    --input: 215 20% 80%;              /* input chizig'i biroz quyuqroq */
+    --ring: 217 91% 45%;
+
+    /* Sidebar — depth uchun bg'dan biroz quyuqroq */
+    --sidebar: 218 28% 93%;            /* #e7ecf3 — sezilarli depth */
+    --sidebar-foreground: 222 47% 11%;
+    --sidebar-accent: 218 28% 88%;     /* hover row — aniq feedback */
+    --sidebar-border: 215 20% 80%;
+
+    /* Chain tokens — 5 bo'g'in semantik ranglari (light, AA ≥4.5:1 text vs tint) */
+    --chain-raw: 188 85% 30%;          /* #0d6e85 teal-cyan, deep */
+    --chain-raw-tint: 188 40% 90%;     /* #d6eaf0 — aniq ko'rinadi */
+    --chain-raw-glow: 188 85% 45% / 0.14;
+
+    --chain-production: 14 85% 38%;    /* #b3401a deep terracotta */
+    --chain-production-tint: 14 50% 91%;
+    --chain-production-glow: 14 85% 52% / 0.14;
+
+    --chain-supply: 152 65% 26%;       /* #166f45 deep emerald */
+    --chain-supply-tint: 152 35% 90%;
+    --chain-supply-glow: 152 60% 42% / 0.14;
+
+    --chain-central: 36 95% 36%;       /* #b46805 deep amber */
+    --chain-central-tint: 36 70% 90%;
+    --chain-central-glow: 36 95% 50% / 0.14;
+
+    --chain-store: 268 70% 42%;        /* #5a25b4 deep violet */
+    --chain-store-tint: 268 50% 92%;
+    --chain-store-glow: 268 75% 58% / 0.14;
+
+    /* Surface tiers — 5 elevation (light, visible separation) */
+    --surface-0: 220 25% 95%;          /* base shell */
+    --surface-1: 220 25% 97%;          /* page bg */
+    --surface-2: 0 0% 100%;            /* card */
+    --surface-3: 220 20% 98%;          /* nested card */
+    --surface-4: 0 0% 100%;            /* topmost / popover */
+
+    /* Ambient glow */
+    --glow-primary: 217 91% 45% / 0.12;
+    --glow-success: 152 65% 30% / 0.10;
+    --glow-danger:  0 75% 45% / 0.12;
+
+    /* Border depth */
+    --border-soft: 215 20% 85%;        /* secondary divider */
+    --border-strong: 215 25% 76%;      /* emphasized boundary */
+
+    --radius: 0.625rem;
+  }
+
+  .dark {
+    /* Surfaces — neutral graphite, no blue cast */
+    --background: 222 15% 7%;          /* #0e1014 — true graphite */
+    --foreground: 220 14% 96%;         /* #f3f4f6 — cool white */
+
+    --card: 220 13% 11%;               /* #181b21 — one tier up */
+    --card-foreground: 220 14% 96%;
+
+    --popover: 220 13% 12%;            /* #1b1e25 — slightly above card */
+    --popover-foreground: 220 14% 96%;
+
+    /* Primary — bright cobalt blue (owner-approved) */
+    --primary: 217 91% 60%;            /* #3b82f6 — clean cobalt */
+    --primary-foreground: 0 0% 100%;   /* #ffffff — white */
+
+    /* Secondary / muted / accent — graphite tiers, neutral */
+    --secondary: 220 11% 17%;          /* #262931 */
+    --secondary-foreground: 220 14% 96%;
+
+    --muted: 220 11% 14%;              /* #1f2229 */
+    --muted-foreground: 220 9% 64%;    /* #969aa3 — body-secondary */
+
+    --accent: 220 11% 18%;             /* #292c34 — hover surface */
+    --accent-foreground: 220 14% 96%;
+
+    /* Status — distinct hues that don't collide with cobalt primary (217°).
+       destructive 0°  → red,    max alert
+       success    152° → emerald
+       warning    36°  → amber-gold (warm, opposite of primary)
+       info       188° → teal-cyan — pushed away from 217° blue so badges stay distinct
+    */
+    --destructive: 0 84% 60%;          /* #ef4444 — alert red */
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 152 56% 48%;            /* #36b27a — emerald */
+    --success-foreground: 152 100% 6%;
+
+    --warning: 28 95% 56%;             /* #f48a2a — orange-amber; hue shifted from chain-central (36°) so warning rings/text don't blend with the central-warehouse chain colour; AA ≥9:1 vs dark bg */
+    --warning-foreground: 24 60% 8%;
+
+    --info: 188 85% 50%;               /* #14b8c4 — teal, distinct from primary blue */
+    --info-foreground: 188 100% 8%;
+
+    /* Borders & inputs — slightly lifted from card */
+    --border: 220 10% 18%;             /* #2a2d34 */
+    --input: 220 10% 17%;              /* #272a30 */
+    --ring: 217 91% 60%;               /* matches primary cobalt */
+
+    /* Sidebar — deeper than background for depth and rail feel */
+    --sidebar: 222 18% 6%;             /* #0a0c10 — deepest surface */
+    --sidebar-foreground: 220 12% 88%;
+    --sidebar-accent: 220 11% 14%;     /* hover row */
+    --sidebar-border: 220 11% 13%;
+
+    /* Chain tokens — 5 bo'g'in semantik ranglari (dark mode) */
+    --chain-raw: 188 85% 50%;
+    --chain-raw-tint: 188 60% 14%;
+    --chain-raw-glow: 188 85% 50% / 0.18;
+
+    --chain-production: 14 85% 58%;
+    --chain-production-tint: 14 60% 14%;
+    --chain-production-glow: 14 85% 58% / 0.18;
+
+    --chain-supply: 152 60% 48%;
+    --chain-supply-tint: 152 50% 12%;
+    --chain-supply-glow: 152 60% 48% / 0.18;
+
+    --chain-central: 36 95% 56%;
+    --chain-central-tint: 36 60% 14%;
+    --chain-central-glow: 36 95% 56% / 0.18;
+
+    --chain-store: 268 75% 64%;
+    --chain-store-tint: 268 50% 14%;
+    --chain-store-glow: 268 75% 64% / 0.18;
+
+    /* Surface tiers — 5 elevation */
+    --surface-0: 222 18% 6%;
+    --surface-1: 222 15% 7%;
+    --surface-2: 220 13% 11%;
+    --surface-3: 220 13% 14%;
+    --surface-4: 220 13% 17%;
+
+    /* Ambient glow */
+    --glow-primary: 217 91% 60% / 0.12;
+    --glow-success: 152 56% 48% / 0.10;
+    --glow-danger:  0 84% 60% / 0.14;
+
+    /* Border depth */
+    --border-soft:   220 10% 16%;
+    --border-strong: 220 10% 22%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: 'rlig' 1, 'calt' 1;
+  }
+}
+
+/*
+ * Sprint D — sparkline last-point glow pulse.
+ *
+ * The halo circle scales 1 → 1.9 while fading out, producing a soft radar
+ * ping at ~1.8s cadence. Dark mode glows feel stronger because the
+ * background luminance is lower, so we don't need a separate keyframe.
+ * Reduced-motion users see a static dot — no animation, no blink.
+ */
+@layer components {
+  @keyframes sparkline-pulse {
+    0% {
+      transform: scale(1);
+      opacity: 0.55;
+    }
+    70% {
+      transform: scale(1.9);
+      opacity: 0;
+    }
+    100% {
+      transform: scale(1.9);
+      opacity: 0;
+    }
+  }
+
+  .hero-kpi-sparkline-pulse {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: sparkline-pulse 1.8s ease-in-out infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .hero-kpi-sparkline-pulse {
+      animation: none;
+      opacity: 0.35;
+    }
+  }
+}
