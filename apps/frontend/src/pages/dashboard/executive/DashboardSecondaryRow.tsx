@@ -3,7 +3,6 @@ import { EmptyState } from '@/components/PageState';
 import { SalesChart } from '../SalesChart';
 import { ForecastsPanel } from '../ForecastsPanel';
 import { OpenRequestsChart } from '../OpenRequestsChart';
-import { PosterStatusCard } from '../PosterStatusCard';
 import type {
   DashboardEcosystem,
   DashboardOverview,
@@ -38,11 +37,9 @@ import { ArrowRight, ClipboardList, Factory } from 'lucide-react';
 export function DashboardSecondaryRow({
   overview,
   ecosystem,
-  onSynced,
 }: {
   overview: DashboardOverview;
   ecosystem: DashboardEcosystem | null;
-  onSynced?: () => void;
 }) {
   return (
     <div className="space-y-6">
@@ -54,10 +51,7 @@ export function DashboardSecondaryRow({
 
       <ProductionPlanPanel items={overview.production_plan} />
 
-      <div className="grid gap-6 xl:grid-cols-2">
-        <PosterStatusCard status={ecosystem?.poster_status ?? null} onSynced={onSynced} />
-        <OpenRequestsPanel overview={overview} />
-      </div>
+      <OpenRequestsPanel overview={overview} />
     </div>
   );
 }

@@ -26,6 +26,7 @@ import { ProductionPlanSummary } from './ProductionPlanSummary';
 import { DashboardSecondaryRow } from './DashboardSecondaryRow';
 import { ChainDetailSheet } from './ChainDetailSheet';
 import { RevenueBreakdown } from './RevenueBreakdown';
+import { PosterStatusCard } from '../PosterStatusCard';
 
 // Stable empty fallback so a missing `ecosystem.data` doesn't churn the
 // ChainHealthRow memo by allocating a fresh `[]` on every render.
@@ -200,11 +201,16 @@ export function ExecutiveDashboardPage() {
 
       <RevenueBreakdown
         isoDate={today}
-        fallbackTotal={ecosystem.data?.poster_status.sales_today_sum ?? 0}
+        fallbackTotal={ecosystem.data?.poster_status?.sales_today_sum ?? 0}
         range={range.range}
       />
 
-      <SecondaryRowGuard overview={overview.data} ecosystem={ecosystem.data} onSynced={ecosystemRefetch} />
+      <PosterStatusCard
+        status={ecosystem.data?.poster_status ?? null}
+        onSynced={ecosystemRefetch}
+      />
+
+      <SecondaryRowGuard overview={overview.data} ecosystem={ecosystem.data} />
 
       <ChainDetailSheet
         type={selectedChain}
@@ -218,11 +224,9 @@ export function ExecutiveDashboardPage() {
 function SecondaryRowGuard({
   overview,
   ecosystem,
-  onSynced,
 }: {
   overview: DashboardOverview;
   ecosystem: DashboardEcosystem | null;
-  onSynced?: () => void;
 }) {
   const isEmpty =
     overview.kpis.total_open_requests === 0 &&
@@ -238,5 +242,5 @@ function SecondaryRowGuard({
       </Card>
     );
   }
-  return <DashboardSecondaryRow overview={overview} ecosystem={ecosystem} onSynced={onSynced} />;
+  return <DashboardSecondaryRow overview={overview} ecosystem={ecosystem} />;
 }
