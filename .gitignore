@@ -51,8 +51,10 @@ Thumbs.db
 # Claude Code — personal settings stay local (team config in settings.json IS committed)
 .claude/settings.local.json
 
-# Deploy scripts (contain server secrets — run locally only)
+# Deploy — local credentials & scripts with secrets
 deploy/setup-server.sh
+deploy/.env.deploy
+!deploy/.env.deploy.example
 
 # Misc
 *.tmp
