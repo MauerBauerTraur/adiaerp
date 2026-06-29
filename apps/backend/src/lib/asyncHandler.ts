@@ -8,7 +8,8 @@
  */
 import type { NextFunction, Request, Response } from 'express';
 
-type AsyncRouteHandler = (req: Request, res: Response) => Promise<void>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AsyncRouteHandler = (req: Request, res: Response) => Promise<void | Response<any>>;
 
 export function asyncHandler(
   handler: AsyncRouteHandler,
