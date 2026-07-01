@@ -311,6 +311,48 @@ locationsRouter.post(
   }),
 );
 
+// DELETE /api/locations/:id  — pm only.
+locationsRouter.delete(
+  '/:id',
+  authenticate,
+  authorize('pm'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const id = parseIdParam(req.params.id, 'id');
+
+    // Block deletion when FK references exist.
+    const { rows: refs } = await query<{ cnt: string }>(
+      `SELECT (
+        (SELECT COUNT(*) FROM production_orders WHERE location_id = $1) +
+        (SELECT COUNT(*) FROM production_orders WHERE target_location_id = $1) +
+        (SELECT COUNT(*) FROM location_flows WHERE from_location_id = $1 OR to_location_id = $1)
+      )::text AS cnt`,
+      [id],
+    );
+    if (Number(refs[0]?.cnt ?? 0) > 0) {
+      throw AppError.validation(
+        "Bu boʻgʻinni oʻchirib boʻlmaydi: unga bogʻliq yozuvlar mavjud.",
+      );
+    }
+
+    const { rows } = await query<{ id: number }>(
+      'DELETE FROM locations WHERE id = $1 RETURNING id',
+      [id],
+    );
+    if (rows[0] === undefined) {
+      throw AppError.notFound('Location not found.');
+    }
+    await writeAudit(poolRunner, {
+      actorUserId: principal.userId,
+      action: 'location.delete',
+      entity: 'locations',
+      entityId: id,
+      payload: null,
+    });
+    res.status(204).end();
+  }),
+);
+
 // PATCH /api/locations/:id  — pm only.
 locationsRouter.patch(
   '/:id',

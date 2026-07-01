@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   CheckCircle2,
@@ -6,7 +6,6 @@ import {
   ChevronRight,
   Loader2,
   PackageCheck,
-  RefreshCw,
   Send,
   Truck,
 } from 'lucide-react';
@@ -702,9 +701,7 @@ export function WarehouseDispatchPage({ productTypeFilter }: { productTypeFilter
   const dispatchItems = allDispatchItems.filter(
     (i) =>
       (myLocationId === null || i.to_location_id === myLocationId) &&
-      // Filter by the production ORDER's main product type (not the dispatched material's type).
-      // This groups all dispatches (inputs + output) under the correct product-type page.
-      (productTypeFilter === undefined || i.po_product_type === productTypeFilter) &&
+      (productTypeFilter === undefined || i.product_type === productTypeFilter) &&
       (selectedOrdIds.length === 0 || selectedOrdIds.includes(String(i.production_order_id))) &&
       (selectedSexIds.length === 0 || selectedSexIds.includes(String(i.to_location_id ?? '__null__'))),
   );
@@ -795,6 +792,25 @@ export function WarehouseDispatchPage({ productTypeFilter }: { productTypeFilter
       ? (allDispatchItems.find((i) => i.to_location_id === myLocationId)?.to_location_name ??
         `Sex #${myLocationId}`)
       : null;
+
+  // Auto-trigger backfill: when orders exist for this tab but no dispatch items, create them.
+  // Uses ordOptions (already filtered by productTypeFilter) and dispatchItems (also filtered).
+  const autoBackfillKey = `${dateFrom}__${dateTo}__${productTypeFilter ?? ''}`;
+  const autoBackfillDone = useRef<Set<string>>(new Set());
+  const canBackfill = isWarehouse || isProdManager || isCentralWarehouse;
+  useEffect(() => {
+    if (
+      !isLoading &&
+      canBackfill &&
+      ordOptions.length > 0 &&
+      dispatchItems.length === 0 &&
+      !busyBackfill &&
+      !autoBackfillDone.current.has(autoBackfillKey)
+    ) {
+      autoBackfillDone.current.add(autoBackfillKey);
+      backfillDispatches();
+    }
+  }, [isLoading, ordOptions.length, dispatchItems.length, autoBackfillKey, canBackfill]);
 
   if (isLoading) return <LoadingState />;
 
@@ -919,33 +935,15 @@ export function WarehouseDispatchPage({ productTypeFilter }: { productTypeFilter
       {dispatchItems.length === 0 ? (
         <Card className="flex flex-col items-center justify-center gap-4 p-12 text-center text-muted-foreground">
           <Truck className="size-10 opacity-30" />
-          {orders.length === 0 ? (
+          {ordOptions.length === 0 ? (
             <p className="text-sm">Bu sana uchun faol zayavkalar yo'q.</p>
+          ) : busyBackfill ? (
+            <div className="flex items-center gap-2 text-sm">
+              <Loader2 className="size-4 animate-spin" />
+              Jo'natish yozuvlari yaratilmoqda…
+            </div>
           ) : (
-            <>
-              <p className="text-sm">Bu zayavkalar uchun jo'natish yozuvlari topilmadi.</p>
-              {isWarehouse && (
-                <div className="flex flex-col items-center gap-2">
-                  <p className="text-xs opacity-70">
-                    Eski zayavkalar uchun yozuvlarni avtomatik yaratish mumkin.
-                  </p>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={busyBackfill}
-                    onClick={backfillDispatches}
-                    className="gap-2"
-                  >
-                    {busyBackfill ? (
-                      <Loader2 className="size-3.5 animate-spin" />
-                    ) : (
-                      <RefreshCw className="size-3.5" />
-                    )}
-                    Jo'natish yozuvlarini yaratish
-                  </Button>
-                </div>
-              )}
-            </>
+            <p className="text-sm">Bu zayavkalar uchun jo'natish yozuvlari topilmadi.</p>
           )}
         </Card>
       ) : myLocationId !== null ? (

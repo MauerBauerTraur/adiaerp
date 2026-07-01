@@ -7,6 +7,7 @@ import {
   Plus,
   Search,
   Store,
+  Trash2,
   Truck,
   Warehouse,
   Waypoints,
@@ -30,6 +31,7 @@ import {
   PageHeader,
 } from '@/components/PageState';
 import { ViewToggle, useViewMode } from '@/components/ViewToggle';
+import { apiRequest, ApiError } from '@/lib/api-client';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useAuth } from '@/hooks/useAuth';
 import { LOCATION_TYPE_LABELS } from '@/lib/labels';
@@ -115,6 +117,8 @@ export function LocationsPage() {
   const [view, setView]             = useViewMode('locations', 'card');
   const [selectedType, setSelectedType] = useState<TypeTab>('');
   const [search, setSearch]             = useState('');
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  const [isDeleting, setIsDeleting]           = useState(false);
 
   /** Normalise legacy `supply` → `sex_storage` for tab counting */
   function canonicalType(loc: Location): Exclude<LocationType, 'supply'> {
@@ -155,6 +159,20 @@ export function LocationsPage() {
     setDialogOpen(true);
   }
 
+  async function deleteLocation(id: number) {
+    setIsDeleting(true);
+    try {
+      await apiRequest(`/api/locations/${id}`, { method: 'DELETE' });
+      setConfirmDeleteId(null);
+      await refetch();
+    } catch (err: unknown) {
+      const msg = err instanceof ApiError ? err.message : 'Xatolik yuz berdi';
+      alert(msg);
+    } finally {
+      setIsDeleting(false);
+    }
+  }
+
   // ─── Render helpers ────────────────────────────────────────────────────────
 
   function renderCard(loc: Location) {
@@ -190,16 +208,51 @@ export function LocationsPage() {
             </span>
           </div>
           {isPm && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-8 shrink-0"
-              title="Tahrirlash"
-              onClick={() => openEdit(loc)}
-              aria-label={`${loc.name} ni tahrirlash`}
-            >
-              <Pencil className="size-4" />
-            </Button>
+            confirmDeleteId === loc.id ? (
+              <div className="flex shrink-0 items-center gap-1">
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  disabled={isDeleting}
+                  onClick={() => deleteLocation(loc.id)}
+                >
+                  Ha
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  disabled={isDeleting}
+                  onClick={() => setConfirmDeleteId(null)}
+                >
+                  Yo'q
+                </Button>
+              </div>
+            ) : (
+              <div className="flex shrink-0 items-center gap-0.5">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-8"
+                  title="Tahrirlash"
+                  onClick={() => openEdit(loc)}
+                  aria-label={`${loc.name} ni tahrirlash`}
+                >
+                  <Pencil className="size-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 text-destructive hover:text-destructive"
+                  title="O'chirish"
+                  onClick={() => setConfirmDeleteId(loc.id)}
+                  aria-label={`${loc.name} ni o'chirish`}
+                >
+                  <Trash2 className="size-4" />
+                </Button>
+              </div>
+            )
           )}
         </div>
 
@@ -338,7 +391,7 @@ export function LocationsPage() {
                 <TableHead>Turi</TableHead>
                 <TableHead>Yetkazish (kun)</TableHead>
                 <TableHead>Tekshirish (kun)</TableHead>
-                {isPm && <TableHead className="w-14 text-right">Amal</TableHead>}
+                {isPm && <TableHead className="w-24 text-right">Amal</TableHead>}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -365,16 +418,51 @@ export function LocationsPage() {
                     </TableCell>
                     {isPm && (
                       <TableCell className="text-right">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="size-8"
-                          title="Tahrirlash"
-                          onClick={() => openEdit(loc)}
-                          aria-label={`${loc.name} ni tahrirlash`}
-                        >
-                          <Pencil className="size-4" />
-                        </Button>
+                        {confirmDeleteId === loc.id ? (
+                          <div className="flex items-center justify-end gap-1">
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              className="h-7 px-2 text-xs"
+                              disabled={isDeleting}
+                              onClick={() => deleteLocation(loc.id)}
+                            >
+                              Ha
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 px-2 text-xs"
+                              disabled={isDeleting}
+                              onClick={() => setConfirmDeleteId(null)}
+                            >
+                              Yo'q
+                            </Button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-end gap-0.5">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-8"
+                              title="Tahrirlash"
+                              onClick={() => openEdit(loc)}
+                              aria-label={`${loc.name} ni tahrirlash`}
+                            >
+                              <Pencil className="size-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-8 text-destructive hover:text-destructive"
+                              title="O'chirish"
+                              onClick={() => setConfirmDeleteId(loc.id)}
+                              aria-label={`${loc.name} ni o'chirish`}
+                            >
+                              <Trash2 className="size-4" />
+                            </Button>
+                          </div>
+                        )}
                       </TableCell>
                     )}
                   </TableRow>

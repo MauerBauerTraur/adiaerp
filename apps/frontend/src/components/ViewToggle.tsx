@@ -78,14 +78,14 @@ export function ViewToggle({ value, onChange, showLabel = true }: Props) {
         active={value === 'card'}
         onClick={() => onChange('card')}
         icon={<LayoutGrid className="size-4" aria-hidden="true" />}
-        label="Card"
+        label="Karta"
         showLabel={showLabel}
       />
       <ToggleButton
         active={value === 'table'}
         onClick={() => onChange('table')}
         icon={<List className="size-4" aria-hidden="true" />}
-        label="Table"
+        label="Jadval"
         showLabel={showLabel}
       />
     </div>

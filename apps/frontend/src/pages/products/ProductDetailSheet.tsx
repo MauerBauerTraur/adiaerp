@@ -148,7 +148,8 @@ function RecipeLineRow({
   const displayQty    = line.qty_per_unit * parentScale;
   const displayBrutto = (line.brutto ?? 0) > 0 ? line.brutto! * parentScale : 0;
   const showBrutto    = displayBrutto > 0 && Math.abs(displayBrutto - displayQty) > 0.00001;
-  const subScale      = displayQty;
+  // Use brutto as the child scale so sub-recipe quantities match the backend expandBom logic.
+  const subScale      = displayBrutto > 0 ? displayBrutto : displayQty;
 
   const bgClass = isSemi
     ? depth === 0

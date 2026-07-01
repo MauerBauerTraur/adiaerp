@@ -1,8 +1,10 @@
+import { useMemo, useState } from 'react';
 import { RefreshCw, TrendingDown, TrendingUp, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { LoadingState, ErrorState } from '@/components/PageState';
 import { UNIT_LABELS } from '@/lib/labels';
+import { cn } from '@/lib/utils';
 import type { StockAlert, Unit } from '@/lib/types';
 
 export function StockAlertsPage() {
@@ -10,9 +12,32 @@ export function StockAlertsPage() {
     '/api/products/stock-alerts',
   );
 
+  const [selectedLocation, setSelectedLocation] = useState<string | null>(null);
+
   const alerts = data ?? [];
-  const belowMin = alerts.filter((a) => a.alert === 'below_min');
-  const aboveMax = alerts.filter((a) => a.alert === 'above_max');
+
+  // Unique location names from the full alert list (sorted)
+  const locations = useMemo<string[]>(() => {
+    const names = new Set<string>();
+    for (const a of alerts) {
+      names.add(a.storage_location_name ?? '—');
+    }
+    return Array.from(names).sort((a, b) => {
+      if (a === '—') return 1;
+      if (b === '—') return -1;
+      return a.localeCompare(b, 'uz');
+    });
+  }, [alerts]);
+
+  const filtered = useMemo(() => {
+    if (selectedLocation === null) return alerts;
+    return alerts.filter((a) =>
+      (a.storage_location_name ?? '—') === selectedLocation,
+    );
+  }, [alerts, selectedLocation]);
+
+  const belowMin = filtered.filter((a) => a.alert === 'below_min');
+  const aboveMax = filtered.filter((a) => a.alert === 'above_max');
 
   return (
     <div className="flex flex-col gap-6 p-6">
@@ -29,13 +54,72 @@ export function StockAlertsPage() {
         </Button>
       </div>
 
+      {/* Location filter */}
+      {!isLoading && !error && locations.length > 1 && (
+        <div className="flex flex-wrap gap-1.5">
+          <button
+            type="button"
+            onClick={() => setSelectedLocation(null)}
+            className={cn(
+              'flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-all',
+              selectedLocation === null
+                ? 'border-primary bg-primary text-primary-foreground shadow-sm'
+                : 'border-border bg-card text-muted-foreground hover:border-primary/50 hover:text-foreground',
+            )}
+          >
+            Hammasi
+            <span
+              className={cn(
+                'min-w-[1.25rem] rounded-full px-1 py-0.5 text-[10px] font-semibold leading-none tabular-nums',
+                selectedLocation === null ? 'bg-white/20 text-white' : 'bg-muted text-muted-foreground',
+              )}
+            >
+              {alerts.length}
+            </span>
+          </button>
+          {locations.map((loc) => {
+            const count = alerts.filter(
+              (a) => (a.storage_location_name ?? '—') === loc,
+            ).length;
+            const isActive = selectedLocation === loc;
+            return (
+              <button
+                key={loc}
+                type="button"
+                onClick={() => setSelectedLocation(isActive ? null : loc)}
+                className={cn(
+                  'flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-all',
+                  isActive
+                    ? 'border-primary bg-primary text-primary-foreground shadow-sm'
+                    : 'border-border bg-card text-muted-foreground hover:border-primary/50 hover:text-foreground',
+                )}
+              >
+                {loc}
+                <span
+                  className={cn(
+                    'min-w-[1.25rem] rounded-full px-1 py-0.5 text-[10px] font-semibold leading-none tabular-nums',
+                    isActive ? 'bg-white/20 text-white' : 'bg-muted text-muted-foreground',
+                  )}
+                >
+                  {count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {isLoading && <LoadingState />}
       {error && <ErrorState message={typeof error === 'string' ? error : 'Xatolik yuz berdi'} />}
 
-      {!isLoading && !error && alerts.length === 0 && (
+      {!isLoading && !error && filtered.length === 0 && (
         <div className="flex flex-col items-center gap-3 py-16 text-muted-foreground">
           <AlertTriangle className="size-10 opacity-20" />
-          <p className="text-sm">Hamma mahsulot me'yor ichida</p>
+          <p className="text-sm">
+            {alerts.length === 0
+              ? "Hamma mahsulot me'yor ichida"
+              : 'Bu ombor uchun ogohlantirishlar yo'q'}
+          </p>
         </div>
       )}
 

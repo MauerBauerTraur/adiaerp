@@ -807,19 +807,20 @@ productionOrdersRouter.patch(
 );
 
 // POST /api/production-orders/backfill-dispatches?date=YYYY-MM-DD
-// Creates dispatch records from BOM for all orders of a given date
-// that don't already have dispatch records (backfill for pre-migration orders).
+// Creates dispatch records from BOM for all orders of a given date.
+// Step 1 (raw): raw-material dispatches for orders with NO dispatch records yet.
+// Step 2 (output): output dispatch (sex → target) for semi/finished orders missing that record.
 productionOrdersRouter.post(
   '/backfill-dispatches',
   authenticate,
-  authorize('pm', 'raw_warehouse_manager'),
+  authorize('pm', 'raw_warehouse_manager', 'production_manager', 'central_warehouse_manager'),
   asyncHandler(async (req, res) => {
     const dateParam =
       typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date)
         ? req.query.date
         : new Date().toISOString().slice(0, 10);
 
-    // Orders that don't have raw-material dispatch records yet
+    // ── Step 1: raw-material dispatches for orders with no dispatch records at all ──
     const { rows: orderRows } = await query<{
       id: number;
       product_id: number;
@@ -860,30 +861,62 @@ productionOrdersRouter.post(
           );
           created++;
         }
-        // Also backfill finished-product tracking dispatch if missing.
-        const targetLocId = order.target_location_id;
-        if (targetLocId !== null) {
-          const { rows: pRows } = await query<{ name: string; unit: string }>(
-            `SELECT name, unit FROM products WHERE id = $1`, [order.product_id],
-          );
-          const p = pRows[0];
-          if (p) {
-            await query(
-              `INSERT INTO production_dispatches
-                 (production_order_id, product_id, product_name, product_unit,
-                  qty_needed, from_location_id, to_location_id)
-               VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-              [order.id, order.product_id, p.name, p.unit, order.qty, order.location_id, targetLocId],
-            );
-            created++;
-          }
-        }
       } catch {
         // Skip orders where BOM expansion fails
       }
     }
 
-    res.status(200).json({ orders: orderRows.length, dispatch_records_created: created, date: dateParam });
+    // ── Step 2: output dispatch for semi/finished orders missing it ──
+    // This runs regardless of whether raw-material dispatches exist for the order,
+    // so it works even after Step 1 has already run on a previous call.
+    const { rows: centralWhRows } = await query<{ id: number }>(
+      `SELECT id FROM locations WHERE type = 'central_warehouse' LIMIT 1`,
+      [],
+    );
+    const centralWarehouseId = centralWhRows[0]?.id ?? null;
+
+    const { rows: outputOrders } = await query<{
+      id: number;
+      product_id: number;
+      qty: number;
+      location_id: number;
+      target_location_id: number | null;
+      product_name: string;
+      product_unit: string;
+      product_type: string;
+    }>(
+      `SELECT po.id, po.product_id, po.qty::float AS qty, po.location_id, po.target_location_id,
+              p.name AS product_name, p.unit AS product_unit, p.type AS product_type
+       FROM production_orders po
+       JOIN products p ON p.id = po.product_id
+       WHERE po.status NOT IN ('cancelled','done')
+         AND p.type IN ('semi','finished')
+         AND (po.deadline = $1 OR (po.deadline IS NULL AND po.created_at::date = $1))
+         AND NOT EXISTS (
+           SELECT 1 FROM production_dispatches pd
+           WHERE pd.production_order_id = po.id
+             AND pd.product_id = po.product_id
+         )`,
+      [dateParam],
+    );
+
+    for (const order of outputOrders) {
+      // For finished products default to central warehouse; semi can go to target or null.
+      const toLocId =
+        order.target_location_id ??
+        (order.product_type === 'finished' ? centralWarehouseId : null);
+      await query(
+        `INSERT INTO production_dispatches
+           (production_order_id, product_id, product_name, product_unit,
+            qty_needed, from_location_id, to_location_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [order.id, order.product_id, order.product_name, order.product_unit,
+         order.qty, order.location_id, toLocId],
+      );
+      created++;
+    }
+
+    res.status(200).json({ orders: orderRows.length + outputOrders.length, dispatch_records_created: created, date: dateParam });
   }),
 );
 
