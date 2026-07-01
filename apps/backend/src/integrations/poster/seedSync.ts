@@ -321,8 +321,8 @@ async function upsertPrepack(
               poster_ingredient_id = COALESCE(poster_ingredient_id, $3),
               type = CASE WHEN type = 'raw' THEN 'semi' ELSE type END,
               batch_yield = $5,
-              production_location_id = COALESCE($6::bigint, production_location_id),
-              storage_location_id = COALESCE($7::bigint, storage_location_id)
+              production_location_id = COALESCE(production_location_id, $6::bigint),
+              storage_location_id = COALESCE(storage_location_id, $7::bigint)
         WHERE id = $4`,
       [name, posterProductId, posterIngredientId, found.id, batchYieldKg, productionLocationId ?? null, storageLocationId ?? null],
     );
@@ -360,8 +360,8 @@ async function upsertMenuProduct(
      ON CONFLICT (poster_product_id) WHERE poster_product_id IS NOT NULL
      DO UPDATE SET name = EXCLUDED.name,
                    poster_ingredient_id = COALESCE(products.poster_ingredient_id, EXCLUDED.poster_ingredient_id),
-                   production_location_id = COALESCE($4::bigint, products.production_location_id),
-                   storage_location_id = COALESCE($5::bigint, products.storage_location_id)
+                   production_location_id = COALESCE(products.production_location_id, $4::bigint),
+                   storage_location_id = COALESCE(products.storage_location_id, $5::bigint)
      RETURNING id`,
     [name, posterProductId, posterIngredientId, productionLocationId ?? null, storageLocationId ?? null],
   );
@@ -933,11 +933,11 @@ export async function syncProductWorkshops(
       total += 1;
       const { rowCount } = await query(
         `UPDATE products
-            SET production_location_id = $1,
-                storage_location_id    = COALESCE($2::bigint, storage_location_id),
+            SET production_location_id = COALESCE(production_location_id, $1),
+                storage_location_id    = COALESCE(storage_location_id, $2::bigint),
                 updated_at             = now()
           WHERE poster_product_id = $3
-            AND production_location_id IS DISTINCT FROM $1`,
+            AND production_location_id IS NULL`,
         [locs.productionLocationId, locs.storageLocationId ?? null, ppid],
       );
       if (rowCount > 0) updated += 1;
@@ -956,11 +956,11 @@ export async function syncProductWorkshops(
       total += 1;
       const { rowCount } = await query(
         `UPDATE products
-            SET production_location_id = $1,
-                storage_location_id    = COALESCE($2::bigint, storage_location_id),
+            SET production_location_id = COALESCE(production_location_id, $1),
+                storage_location_id    = COALESCE(storage_location_id, $2::bigint),
                 updated_at             = now()
           WHERE poster_product_id = $3
-            AND production_location_id IS DISTINCT FROM $1`,
+            AND production_location_id IS NULL`,
         [locs.productionLocationId, locs.storageLocationId ?? null, ppid],
       );
       if (rowCount > 0) updated += 1;
