@@ -8,9 +8,9 @@
  *   - produce `order.qty` of the output product into the target location
  *     (`production_output` movement) — typically the central warehouse;
  *   - flip the order to `done` and stamp `done_at`.
- * If ANY component is short, the whole transaction rolls back — nothing
- * changes (AC5.2). `applyMovement` is reused so each movement keeps its own
- * guarded decrement, ledger row and audit row (invariant 1).
+ * Short components are consumed with `allowNegative: true` — stock may go
+ * negative but the order is never blocked. `applyMovement` is reused so each
+ * movement keeps its own ledger row and audit row (invariant 1).
  *
  * The status path is `new -> in_progress -> done` (plus `cancelled`); only a
  * forward step is allowed (`finishProductionOrder` handles `-> done`).
@@ -54,8 +54,9 @@ export const PRODUCTION_ORDER_COLUMNS = `id, product_id, qty, location_id,
  * Run the atomic "done" flow for a production order WITHIN an existing
  * transaction. The caller (route handler or state machine) owns the
  * transaction so the order flip and the replenishment advance can commit
- * together. Throws `INSUFFICIENT_STOCK` (409) when a BOM component is short
- * — the surrounding transaction then rolls back (AC5.1, AC5.2, invariant 5).
+ * together. BOM components are consumed with `allowNegative: true` so a
+ * short component never blocks completion — the deficit is recorded in the
+ * stock ledger and corrected when raw materials arrive.
  *
  * @returns the movement ids produced (consumption lines + the output line).
  */
@@ -66,10 +67,10 @@ export async function consumeBomAndProduce(
 ): Promise<{ inputMovementIds: number[]; outputMovementId: number }> {
   const orderQty = Number(order.qty);
 
-  // If no explicit target, the output stays in the production location itself
-  // (typical for zagatovka sub-orders that produce a semi-finished component
-  // which the parent order will later consume from the same sex).
-  const outputLocationId = order.target_location_id ?? order.location_id;
+  // Output always lands at the production location first. For final orders the
+  // central_warehouse_manager receives the output dispatch (Qabul qilindi)
+  // which applies the production→warehouse transfer and updates central stock.
+  const outputLocationId = order.location_id;
 
   // BOM lines for the produced product.
   //
@@ -92,9 +93,9 @@ export async function consumeBomAndProduce(
     );
   }
 
-  // Consume every component out of the production location. `applyMovement`'s
-  // guarded decrement raises INSUFFICIENT_STOCK if a component is short — the
-  // transaction then rolls back, so partial consumption is impossible.
+  // Consume every component out of the production location. allowNegative
+  // lets stock go below zero so the order is never blocked by a short
+  // component — the deficit shows in stock reports and is corrected later.
   const inputMovementIds: number[] = [];
   for (const line of bom) {
     const needed = Number(line.qty_per_unit) * orderQty;
@@ -107,6 +108,7 @@ export async function consumeBomAndProduce(
         reason: 'production_input',
         actorUserId,
         productionOrderId: order.id,
+        allowNegative: true,
       },
       tx,
     );
@@ -183,11 +185,9 @@ export async function finishProductionOrder(
       payload: { product_id: order.product_id, qty: Number(order.qty) },
     });
 
-    // M9 — production_order_done notification (spec §7). The output landed
-    // in `target_location_id` (the central warehouse). Notify that
-    // warehouse's manager plus every `pm` user. Same transaction — if the
-    // BOM consume + ledger write rolls back, no orphan notification is
-    // left in `notifications`.
+    // M9 — production_order_done notification (spec §7). Notify the target
+    // warehouse manager + every pm that a dispatch is ready to receive.
+    // Same transaction — if the BOM consume rolls back, no orphan notification.
     if (order.target_location_id !== null) {
       const recipients: number[] = [];
       const cwManager = await getLocationManager(client, order.target_location_id);
@@ -215,7 +215,7 @@ export async function finishProductionOrder(
           title: `Zayafka tayyor #${orderId}`,
           body:
             `Zayafka #${orderId} tayyor: ${Number(order.qty)} ${productUnit} ` +
-            `${productName} markaziy skladga keldi.`,
+            `${productName} qabul qilishga tayyor.`,
           payload: {
             production_order_id: orderId,
             product_id: order.product_id,

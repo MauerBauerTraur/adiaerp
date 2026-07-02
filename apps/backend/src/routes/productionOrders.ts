@@ -618,7 +618,9 @@ productionOrdersRouter.patch(
       throw AppError.validation("Faqat 'berildi' holatidagi yozuvni qabul qilish mumkin.");
     }
 
-    // Stock was already moved at dispatch time; only apply here for pre-migration records.
+    // Apply the transfer movement here (production → warehouse). movement_id
+    // is null for normal output dispatches; non-null only for legacy records
+    // that had their movement applied at dispatch time.
     let movementId: number | null = dispatch.movement_id;
     if (movementId === null) {
       const fromLoc = dispatch.from_location_id;
@@ -1364,16 +1366,13 @@ productionOrdersRouter.patch(
         return updated;
       });
 
-      // Auto-dispatch finished product when order is "Topshirildi" (in_progress → done).
-      // Marks the finished-product output dispatch as dispatched + applies stock movement.
-      // This makes it visible in "Tayyor mahsulot" view for central_warehouse_manager to receive.
-      const { rows: finishedDispatches } = await query<{
-        id: number; product_id: number; qty_needed: number;
-        from_location_id: number | null; to_location_id: number | null;
-      }>(
-        `SELECT id, product_id, qty_needed::float AS qty_needed,
-                from_location_id, to_location_id
-           FROM production_dispatches
+      // Auto-dispatch: mark the finished-product output dispatch as 'dispatched'
+      // WITHOUT applying a stock movement. The production_output movement above
+      // already put the product at the production location. The stock transfer
+      // to the target warehouse happens when central_warehouse_manager clicks
+      // "Qabul qilindi" (dispatch receive), which applies movement_id = null path.
+      const { rows: finishedDispatches } = await query<{ id: number }>(
+        `SELECT id FROM production_dispatches
           WHERE production_order_id = $1
             AND product_id = $2
             AND status = 'pending'`,
@@ -1381,27 +1380,11 @@ productionOrdersRouter.patch(
       );
       for (const d of finishedDispatches) {
         try {
-          let movementId: number | null = null;
-          const fromLoc = d.from_location_id;
-          const toLoc = d.to_location_id;
-          if (fromLoc !== null && toLoc !== null && fromLoc !== toLoc) {
-            const mv = await applyMovement({
-              productId: Number(d.product_id),
-              fromLocationId: Number(fromLoc),
-              toLocationId: Number(toLoc),
-              qty: Number(d.qty_needed),
-              reason: 'transfer',
-              actorUserId: principal.userId,
-              productionOrderId: orderId,
-              allowNegative: true,
-            });
-            movementId = mv.movementId;
-          }
           await query(
             `UPDATE production_dispatches
-             SET status = 'dispatched', dispatched_at = NOW(), dispatched_by = $2, movement_id = $3
+             SET status = 'dispatched', dispatched_at = NOW(), dispatched_by = $2, movement_id = NULL
              WHERE id = $1`,
-            [d.id, principal.userId, movementId],
+            [d.id, principal.userId],
           );
         } catch {
           // Don't abort the order completion if finished-dispatch update fails
