@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react';
 import { RefreshCw, TrendingDown, TrendingUp, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Select } from '@/components/ui/select';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { LoadingState, ErrorState } from '@/components/PageState';
 import { UNIT_LABELS } from '@/lib/labels';
-import { cn } from '@/lib/utils';
 import type { StockAlert, Unit } from '@/lib/types';
 
 export function StockAlertsPage() {
@@ -56,56 +56,25 @@ export function StockAlertsPage() {
 
       {/* Location filter */}
       {!isLoading && !error && locations.length > 1 && (
-        <div className="flex flex-wrap gap-1.5">
-          <button
-            type="button"
-            onClick={() => setSelectedLocation(null)}
-            className={cn(
-              'flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-all',
-              selectedLocation === null
-                ? 'border-primary bg-primary text-primary-foreground shadow-sm'
-                : 'border-border bg-card text-muted-foreground hover:border-primary/50 hover:text-foreground',
-            )}
+        <div className="flex items-center gap-2">
+          <span className="shrink-0 text-sm text-muted-foreground">Sklad:</span>
+          <Select
+            value={selectedLocation ?? ''}
+            onChange={(e) => setSelectedLocation(e.target.value || null)}
+            className="w-64"
           >
-            Hammasi
-            <span
-              className={cn(
-                'min-w-[1.25rem] rounded-full px-1 py-0.5 text-[10px] font-semibold leading-none tabular-nums',
-                selectedLocation === null ? 'bg-white/20 text-white' : 'bg-muted text-muted-foreground',
-              )}
-            >
-              {alerts.length}
-            </span>
-          </button>
-          {locations.map((loc) => {
-            const count = alerts.filter(
-              (a) => (a.storage_location_name ?? '—') === loc,
-            ).length;
-            const isActive = selectedLocation === loc;
-            return (
-              <button
-                key={loc}
-                type="button"
-                onClick={() => setSelectedLocation(isActive ? null : loc)}
-                className={cn(
-                  'flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-all',
-                  isActive
-                    ? 'border-primary bg-primary text-primary-foreground shadow-sm'
-                    : 'border-border bg-card text-muted-foreground hover:border-primary/50 hover:text-foreground',
-                )}
-              >
-                {loc}
-                <span
-                  className={cn(
-                    'min-w-[1.25rem] rounded-full px-1 py-0.5 text-[10px] font-semibold leading-none tabular-nums',
-                    isActive ? 'bg-white/20 text-white' : 'bg-muted text-muted-foreground',
-                  )}
-                >
-                  {count}
-                </span>
-              </button>
-            );
-          })}
+            <option value="">Hammasi ({alerts.length} ta)</option>
+            {locations.map((loc) => {
+              const count = alerts.filter(
+                (a) => (a.storage_location_name ?? '—') === loc,
+              ).length;
+              return (
+                <option key={loc} value={loc}>
+                  {loc} ({count} ta)
+                </option>
+              );
+            })}
+          </Select>
         </div>
       )}
 
@@ -118,7 +87,7 @@ export function StockAlertsPage() {
           <p className="text-sm">
             {alerts.length === 0
               ? "Hamma mahsulot me'yor ichida"
-              : 'Bu ombor uchun ogohlantirishlar yo'q'}
+              : "Bu ombor uchun ogohlantirishlar yo‘q"}
           </p>
         </div>
       )}

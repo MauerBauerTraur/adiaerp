@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { AlertTriangle } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { ErrorState, LoadingState } from '@/components/PageState';
 import {
@@ -166,13 +167,32 @@ export function ExecutiveDashboardPage() {
     return null;
   }
 
+  const isProdManager = user?.role === 'production_manager';
+  const prodNode = ecosystem.data?.chain_summary.find((n) => n.type === 'production');
+  const prodPulse = prodNode?.pulse.kind === 'production' ? prodNode.pulse : null;
+  const overdueCount = prodPulse?.overdue_orders ?? 0;
+
   return (
     <div className="space-y-4 sm:space-y-6">
+      {isProdManager && overdueCount > 0 && (
+        <div className="flex items-center gap-2 rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-2.5 text-sm font-medium text-rose-700 dark:text-rose-400">
+          <AlertTriangle className="size-4 shrink-0" aria-hidden="true" />
+          <span>{overdueCount} ta buyurtmaning muddati o'tgan</span>
+          <button
+            type="button"
+            onClick={() => navigate('/production-orders')}
+            className="ml-auto text-xs underline underline-offset-2 hover:no-underline"
+          >
+            Ko'rish
+          </button>
+        </div>
+      )}
       <HeroStrip
         overview={overview.data}
         ecosystem={ecosystem.data}
         range={range}
         onNavigate={navigate}
+        role={user?.role}
       />
 
       <ChainHealthRow
@@ -199,18 +219,22 @@ export function ExecutiveDashboardPage() {
         />
       </div>
 
-      <RevenueBreakdown
-        isoDate={today}
-        fallbackTotal={ecosystem.data?.poster_status?.sales_today_sum ?? 0}
-        range={range.range}
-      />
+      {!isProdManager && user?.role !== 'raw_warehouse_manager' && (
+        <RevenueBreakdown
+          isoDate={today}
+          fallbackTotal={ecosystem.data?.poster_status?.sales_today_sum ?? 0}
+          range={range.range}
+        />
+      )}
 
-      <PosterStatusCard
-        status={ecosystem.data?.poster_status ?? null}
-        onSynced={ecosystemRefetch}
-      />
+      {!isProdManager && user?.role !== 'raw_warehouse_manager' && (
+        <PosterStatusCard
+          status={ecosystem.data?.poster_status ?? null}
+          onSynced={ecosystemRefetch}
+        />
+      )}
 
-      <SecondaryRowGuard overview={overview.data} ecosystem={ecosystem.data} />
+      <SecondaryRowGuard overview={overview.data} ecosystem={ecosystem.data} role={user?.role} />
 
       <ChainDetailSheet
         type={selectedChain}
@@ -224,9 +248,11 @@ export function ExecutiveDashboardPage() {
 function SecondaryRowGuard({
   overview,
   ecosystem,
+  role,
 }: {
   overview: DashboardOverview;
   ecosystem: DashboardEcosystem | null;
+  role?: string;
 }) {
   const isEmpty =
     overview.kpis.total_open_requests === 0 &&
@@ -242,5 +268,5 @@ function SecondaryRowGuard({
       </Card>
     );
   }
-  return <DashboardSecondaryRow overview={overview} ecosystem={ecosystem} />;
+  return <DashboardSecondaryRow overview={overview} ecosystem={ecosystem} role={role} />;
 }

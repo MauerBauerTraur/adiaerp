@@ -3,7 +3,10 @@ import {
   ArrowDown,
   ArrowRight,
   ArrowUp,
+  CheckCircle2,
   ClipboardList,
+  Clock,
+  PackageCheck,
   Receipt,
   TrendingUp,
   Wallet,
@@ -28,6 +31,7 @@ export interface HeroStripProps {
   range?: DateRangeValue;
   onNavigate?: (href: string) => void;
   className?: string;
+  role?: string;
 }
 
 interface RangeCopy {
@@ -116,28 +120,185 @@ function computeDeltaPct(today: number, prev: number): number | null {
   return 0;
 }
 
-export function HeroStrip({
-  overview,
-  ecosystem,
-  range,
-  onNavigate,
-  className,
-}: HeroStripProps) {
-  const copy = rangeCopy(range?.range ?? 'today');
+function buildKpis(
+  role: string | undefined,
+  overview: DashboardOverview,
+  ecosystem: DashboardEcosystem | null,
+  copy: RangeCopy,
+): HeroKpi[] {
+  const belowMin = overview.kpis.below_min_count;
+  const criticalCard: HeroKpi = {
+    testId: 'hero-strip-critical',
+    tone: 'rose',
+    label: 'Kritik qoldiq',
+    value: formatQty(belowMin),
+    caption: belowMin > 0 ? "min'dan past" : "muammo yo'q",
+    Icon: belowMin > 0 ? AlertTriangle : TrendingUp,
+    direction: 'down-good',
+    deltaPct: null,
+    href: '/stock-alerts',
+    detailHint: belowMin > 0 ? 'Stok ogohlantirishlar' : "Qoldiqni ko'rish",
+  };
+
+  // ── production_manager ───────────────────────────────────────────────────
+  if (role === 'production_manager') {
+    const prodNode = ecosystem?.chain_summary.find((n) => n.type === 'production');
+    const prodPulse = prodNode?.pulse.kind === 'production' ? prodNode.pulse : null;
+    const activeOrders = overview.kpis.active_production_orders;
+    const overdue = prodPulse?.overdue_orders ?? 0;
+    const doneToday = prodPulse?.done_today ?? 0;
+    return [
+      {
+        testId: 'hero-strip-active-orders',
+        tone: 'amber',
+        label: 'Faol buyurtmalar',
+        value: formatQty(activeOrders),
+        caption: 'ta zayavka',
+        Icon: ClipboardList,
+        direction: 'down-good',
+        deltaPct: null,
+        href: '/production-orders',
+        detailHint: 'Buyurtmalar',
+      },
+      {
+        testId: 'hero-strip-overdue',
+        tone: overdue > 0 ? 'rose' : 'emerald',
+        label: "Muddat o'tgan",
+        value: formatQty(overdue),
+        caption: overdue > 0 ? "ta kechikkan" : "hammasi o'z vaqtida",
+        Icon: overdue > 0 ? Clock : CheckCircle2,
+        direction: 'down-good',
+        deltaPct: null,
+        href: '/production-orders',
+        detailHint: "Buyurtmalar",
+      },
+      {
+        testId: 'hero-strip-done-today',
+        tone: 'emerald',
+        label: 'Bugun bajarildi',
+        value: formatQty(doneToday),
+        caption: 'ta buyurtma',
+        Icon: CheckCircle2,
+        direction: 'up-good',
+        deltaPct: null,
+        href: '/production-orders',
+        detailHint: "Buyurtmalar",
+      },
+      criticalCard,
+    ];
+  }
+
+  // ── raw_warehouse_manager ────────────────────────────────────────────────
+  if (role === 'raw_warehouse_manager') {
+    const rawNode = ecosystem?.chain_summary.find((n) => n.type === 'raw_warehouse');
+    const rawPulse = rawNode?.pulse.kind === 'raw' ? rawNode.pulse : null;
+    const receivedToday = rawPulse?.received_today ?? 0;
+    const pendingPO = rawPulse?.pending_purchase_orders ?? overview.kpis.pending_approvals;
+    return [
+      criticalCard,
+      {
+        testId: 'hero-strip-open-requests',
+        tone: 'amber',
+        label: "Ochiq so'rovlar",
+        value: formatQty(overview.kpis.total_open_requests),
+        caption: "ta so'rov",
+        Icon: ClipboardList,
+        direction: 'down-good',
+        deltaPct: null,
+        href: '/replenishment',
+        detailHint: "So'rovlar",
+      },
+      {
+        testId: 'hero-strip-pending-po',
+        tone: 'amber',
+        label: 'Tasdiq kutmoqda',
+        value: formatQty(pendingPO),
+        caption: 'ta buyurtma',
+        Icon: Receipt,
+        direction: 'down-good',
+        deltaPct: null,
+        href: '/purchase-orders',
+        detailHint: "Buyurtmalar",
+      },
+      {
+        testId: 'hero-strip-received',
+        tone: 'emerald',
+        label: 'Bugun qabul',
+        value: formatQty(receivedToday),
+        caption: 'qabul qilindi',
+        Icon: PackageCheck,
+        direction: 'up-good',
+        deltaPct: null,
+      },
+    ];
+  }
+
+  // ── store_manager / central_warehouse_manager ────────────────────────────
+  if (role === 'store_manager' || role === 'central_warehouse_manager') {
+    const salesToday = ecosystem?.poster_status.sales_today_sum ?? 0;
+    const receiptsToday = ecosystem?.poster_status.sales_today_count ?? 0;
+    const days = ecosystem?.sales_chart.days ?? [];
+    const todayQty = days.length > 0 ? (days[days.length - 1]?.qty ?? 0) : 0;
+    const yesterdayQty = days.length > 1 ? (days[days.length - 2]?.qty ?? 0) : 0;
+    const revenueDelta = computeDeltaPct(todayQty, yesterdayQty);
+    return [
+      {
+        testId: 'hero-strip-revenue',
+        tone: 'emerald',
+        label: copy.revenueTitle,
+        value: formatFullNumber(salesToday),
+        caption: "so'm",
+        Icon: Wallet,
+        direction: 'up-good',
+        deltaPct: revenueDelta,
+        prevLabel: copy.comparisonLabel,
+        href: '/dashboard/operations',
+        detailHint: 'Sotuv tafsilotlari',
+        subStats: [
+          { label: 'Kecha', value: formatFullNumber(yesterdayQty > 0 ? yesterdayQty : 0) },
+        ],
+      },
+      {
+        testId: 'hero-strip-receipts',
+        tone: 'sky',
+        label: copy.receiptsTitle,
+        value: formatFullNumber(receiptsToday),
+        caption: 'cheklar',
+        Icon: Receipt,
+        direction: 'up-good',
+        deltaPct: revenueDelta,
+        prevLabel: copy.comparisonLabel,
+        href: '/cashier/receipts',
+        detailHint: 'Cheklar',
+      },
+      criticalCard,
+      {
+        testId: 'hero-strip-open-requests',
+        tone: 'amber',
+        label: "Ochiq so'rovlar",
+        value: formatQty(overview.kpis.total_open_requests),
+        caption: "ta so'rov",
+        Icon: ClipboardList,
+        direction: 'down-good',
+        deltaPct: null,
+        href: '/replenishment',
+        detailHint: "So'rovlar",
+      },
+    ];
+  }
+
+  // ── pm / supply_manager / default ────────────────────────────────────────
   const salesToday = ecosystem?.poster_status.sales_today_sum ?? 0;
   const receiptsToday = ecosystem?.poster_status.sales_today_count ?? 0;
   const activeRequests =
     overview.kpis.active_production_orders +
     overview.kpis.total_open_requests +
     overview.kpis.pending_approvals;
-  const belowMin = overview.kpis.below_min_count;
-
   const days = ecosystem?.sales_chart.days ?? [];
   const todayQty = days.length > 0 ? (days[days.length - 1]?.qty ?? 0) : 0;
   const yesterdayQty = days.length > 1 ? (days[days.length - 2]?.qty ?? 0) : 0;
   const revenueDelta = computeDeltaPct(todayQty, yesterdayQty);
-
-  const kpis: HeroKpi[] = [
+  return [
     {
       testId: 'hero-strip-revenue',
       tone: 'emerald',
@@ -184,19 +345,20 @@ export function HeroStrip({
       href: '/sorovnomalar',
       detailHint: "Barcha so'rovlar",
     },
-    {
-      testId: 'hero-strip-critical',
-      tone: 'rose',
-      label: 'Kritik qoldiq',
-      value: formatQty(belowMin),
-      caption: belowMin > 0 ? "min'dan past" : 'muammo yo\'q',
-      Icon: belowMin > 0 ? AlertTriangle : TrendingUp,
-      direction: 'down-good',
-      deltaPct: null,
-      href: '/stock-alerts',
-      detailHint: belowMin > 0 ? 'Stok ogohlantirishlar' : "Qoldiqni ko'rish",
-    },
+    criticalCard,
   ];
+}
+
+export function HeroStrip({
+  overview,
+  ecosystem,
+  range,
+  onNavigate,
+  className,
+  role,
+}: HeroStripProps) {
+  const copy = rangeCopy(range?.range ?? 'today');
+  const kpis = buildKpis(role, overview, ecosystem, copy);
 
   return (
     <div

@@ -37,17 +37,22 @@ import { ArrowRight, ClipboardList, Factory } from 'lucide-react';
 export function DashboardSecondaryRow({
   overview,
   ecosystem,
+  role,
 }: {
   overview: DashboardOverview;
   ecosystem: DashboardEcosystem | null;
+  role?: string;
 }) {
+  const hideSalesWidgets =
+    role === 'production_manager' || role === 'raw_warehouse_manager';
+
   return (
     <div className="space-y-6">
-      {ecosystem !== null && (
+      {!hideSalesWidgets && ecosystem !== null && (
         <SalesChart points={ecosystem.sales_chart.days} />
       )}
 
-      <ForecastsPanel />
+      {!hideSalesWidgets && <ForecastsPanel />}
 
       <ProductionPlanPanel items={overview.production_plan} />
 

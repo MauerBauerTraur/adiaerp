@@ -123,18 +123,37 @@ function StatusChip({ status }: { status: StatusKey }) {
 }
 
 // ---------------------------------------------------------------------------
-// PipelineStat — segmented bar dashboard card
+// PipelineStat — segmented bar dashboard card (clickable status filter)
 // ---------------------------------------------------------------------------
-function PipelineStat({ items }: { items: ProductionDispatch[] }) {
-  const pending = items.filter((i) => i.status === 'pending').length;
+type StatusFilter = 'pending' | 'dispatched' | 'received' | null;
+
+function PipelineStat({
+  items,
+  statusFilter,
+  onStatusFilter,
+}: {
+  items: ProductionDispatch[];
+  statusFilter: StatusFilter;
+  onStatusFilter: (s: StatusFilter) => void;
+}) {
+  const pending    = items.filter((i) => i.status === 'pending').length;
   const dispatched = items.filter((i) => i.status === 'dispatched').length;
-  const received = items.filter((i) => i.status === 'received').length;
+  const received   = items.filter((i) => i.status === 'received').length;
   const total = items.length;
   if (total === 0) return null;
 
-  const pPending = (pending / total) * 100;
+  const pPending    = (pending / total) * 100;
   const pDispatched = (dispatched / total) * 100;
-  const pReceived = (received / total) * 100;
+  const pReceived   = (received / total) * 100;
+
+  function toggle(s: 'pending' | 'dispatched' | 'received') {
+    onStatusFilter(statusFilter === s ? null : s);
+  }
+
+  const colBase =
+    'flex-1 cursor-pointer rounded-xl px-3 py-2.5 text-left transition-all select-none';
+  const colActive = (active: boolean, ring: string) =>
+    active ? `${ring} ring-2 ring-offset-1` : 'hover:bg-muted/40';
 
   return (
     <div className="rounded-2xl border border-border/50 bg-card p-5 shadow-sm space-y-4">
@@ -167,21 +186,35 @@ function PipelineStat({ items }: { items: ProductionDispatch[] }) {
         )}
       </div>
 
-      {/* 3 stat columns */}
-      <div className="grid grid-cols-3 divide-x divide-border/40">
-        <div className="pr-4 space-y-0.5">
+      {/* 3 clickable stat columns */}
+      <div className="flex gap-1">
+        <button
+          type="button"
+          onClick={() => toggle('pending')}
+          className={`${colBase} space-y-0.5 ${colActive(statusFilter === 'pending', 'ring-amber-400 bg-amber-50 dark:bg-amber-950/30')}`}
+        >
           <p className="text-2xl font-bold tabular-nums text-amber-600 dark:text-amber-400">
             {pending}
           </p>
           <p className="text-xs text-muted-foreground">Kutilmoqda</p>
-        </div>
-        <div className="px-4 space-y-0.5">
+        </button>
+
+        <button
+          type="button"
+          onClick={() => toggle('dispatched')}
+          className={`${colBase} space-y-0.5 ${colActive(statusFilter === 'dispatched', 'ring-blue-400 bg-blue-50 dark:bg-blue-950/30')}`}
+        >
           <p className="text-2xl font-bold tabular-nums text-blue-600 dark:text-blue-400">
             {dispatched}
           </p>
           <p className="text-xs text-muted-foreground">Berildi</p>
-        </div>
-        <div className="pl-4 space-y-0.5">
+        </button>
+
+        <button
+          type="button"
+          onClick={() => toggle('received')}
+          className={`${colBase} space-y-0.5 ${colActive(statusFilter === 'received', 'ring-emerald-500 bg-emerald-50 dark:bg-emerald-950/30')}`}
+        >
           <p className="text-2xl font-bold tabular-nums text-emerald-600 dark:text-emerald-400">
             {received}
           </p>
@@ -191,8 +224,14 @@ function PipelineStat({ items }: { items: ProductionDispatch[] }) {
               {Math.round(pReceived)}% tayyor
             </p>
           )}
-        </div>
+        </button>
       </div>
+
+      {statusFilter !== null && (
+        <p className="text-[11px] text-muted-foreground">
+          <span className="font-semibold text-foreground">{STATUS_CFG[statusFilter].label}</span> filtri faol — bekor qilish uchun qayta bosing
+        </p>
+      )}
     </div>
   );
 }
@@ -693,6 +732,7 @@ export function WarehouseDispatchPage({ productTypeFilter }: { productTypeFilter
   const [busyBulkAll, setBusyBulkAll] = useState(false);
   const [busyReceiveAll, setBusyReceiveAll] = useState(false);
   const [busyBackfill, setBusyBackfill] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(null);
 
   const allDispatchItems = data?.dispatch_items ?? [];
   const selectedOrdIds = ordFilter.order ?? [];
@@ -703,7 +743,8 @@ export function WarehouseDispatchPage({ productTypeFilter }: { productTypeFilter
       (myLocationId === null || i.to_location_id === myLocationId) &&
       (productTypeFilter === undefined || i.product_type === productTypeFilter) &&
       (selectedOrdIds.length === 0 || selectedOrdIds.includes(String(i.production_order_id))) &&
-      (selectedSexIds.length === 0 || selectedSexIds.includes(String(i.to_location_id ?? '__null__'))),
+      (selectedSexIds.length === 0 || selectedSexIds.includes(String(i.to_location_id ?? '__null__'))) &&
+      (statusFilter === null || i.status === statusFilter),
   );
 
   const groups = useMemo(() => groupByLocation(dispatchItems), [dispatchItems]);
@@ -862,8 +903,18 @@ export function WarehouseDispatchPage({ productTypeFilter }: { productTypeFilter
         }
       />
 
-      {/* Pipeline stat card */}
-      <PipelineStat items={dispatchItems} />
+      {/* Pipeline stat card — shows unfiltered totals so counts stay stable */}
+      <PipelineStat
+        items={allDispatchItems.filter(
+          (i) =>
+            (myLocationId === null || i.to_location_id === myLocationId) &&
+            (productTypeFilter === undefined || i.product_type === productTypeFilter) &&
+            (selectedOrdIds.length === 0 || selectedOrdIds.includes(String(i.production_order_id))) &&
+            (selectedSexIds.length === 0 || selectedSexIds.includes(String(i.to_location_id ?? '__null__'))),
+        )}
+        statusFilter={statusFilter}
+        onStatusFilter={setStatusFilter}
+      />
 
       {/* Filter bar */}
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/50 bg-card/60 px-4 py-2.5">
@@ -875,6 +926,7 @@ export function WarehouseDispatchPage({ productTypeFilter }: { productTypeFilter
             setDateFrom(e.target.value);
             setOrdFilter({ order: [] });
             setSexFilter({ sex: [] });
+            setStatusFilter(null);
           }}
           className="h-7 rounded-lg border border-border bg-background px-2 text-sm"
         />
@@ -886,6 +938,7 @@ export function WarehouseDispatchPage({ productTypeFilter }: { productTypeFilter
             setDateTo(e.target.value);
             setOrdFilter({ order: [] });
             setSexFilter({ sex: [] });
+            setStatusFilter(null);
           }}
           className="h-7 rounded-lg border border-border bg-background px-2 text-sm"
         />
