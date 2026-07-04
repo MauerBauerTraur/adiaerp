@@ -763,6 +763,8 @@ type AlertsFeedItem = {
 type SalesChartItem = {
   date: string; // YYYY-MM-DD
   qty: number;
+  revenue: number;
+  receipts: number;
 };
 
 /**
@@ -1666,32 +1668,35 @@ async function fetchSalesChart(
   scope: Exclude<EcosystemScope, { kind: 'empty' }>,
   range: DateRange,
 ): Promise<SalesChartItem[]> {
-  // F4.9 — chart window equals the requested range. The aggregate table is
-  // keyed by `stat_date` (DATE, not TIMESTAMPTZ), so we compare against the
-  // calendar bounds, inclusive on both ends.
-  const fromDate = toIsoDate(range.from);
-  // Subtract 1 ms so a half-open `[from, to)` window maps back to the last
-  // inclusive calendar day in `to`. Without it `2026-05-25T00:00:00Z` would
-  // pull in 2026-05-25 even when the caller asked through 2026-05-24.
-  const toInclusive = new Date(range.to.getTime() - 1);
-  const toDate = toIsoDate(toInclusive);
-  const params: SqlParam[] = [fromDate, toDate];
-  let where = `WHERE stat_date >= $1::date AND stat_date <= $2::date`;
+  // Query `sales` directly (not `sales_stats_daily`) so today's real-time
+  // data is always visible regardless of when the nightly aggregate ran.
+  const params: SqlParam[] = [range.from, range.to];
+  let where = `WHERE sold_at >= $1 AND sold_at < $2`;
   if (scope.kind === 'locations') {
     params.push(scope.locationIds);
-    where += ` AND location_id = ANY($${params.length}::bigint[])`;
+    where += ` AND store_id = ANY($${params.length}::bigint[])`;
   }
-  const { rows } = await query<{ stat_date: Date; qty: string }>(
-    `SELECT stat_date, sum(qty_sold) AS qty
-       FROM sales_stats_daily
+  const { rows } = await query<{
+    day: Date;
+    qty: string;
+    revenue: string;
+    receipts: string;
+  }>(
+    `SELECT date_trunc('day', sold_at)           AS day,
+            coalesce(sum(qty), 0)                AS qty,
+            coalesce(sum(qty * price), 0)        AS revenue,
+            count(DISTINCT poster_transaction_id) AS receipts
+       FROM sales
        ${where}
-       GROUP BY stat_date
-       ORDER BY stat_date`,
+       GROUP BY day
+       ORDER BY day`,
     params,
   );
   return rows.map((r) => ({
-    date: toIsoDate(r.stat_date),
+    date: toIsoDate(r.day),
     qty: Number(r.qty),
+    revenue: Number(r.revenue),
+    receipts: Number(r.receipts),
   }));
 }
 

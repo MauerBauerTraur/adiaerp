@@ -19,7 +19,7 @@ function buildPoints(qtys: number[]): DashboardSalesPoint[] {
     const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
       d.getDate(),
     ).padStart(2, '0')}`;
-    return { date: iso, qty };
+    return { date: iso, qty, revenue: qty * 1000, receipts: Math.ceil(qty / 5) };
   });
 }
 

@@ -1214,12 +1214,16 @@ export interface DashboardAlert {
   created_at: string;
 }
 
-/** One point in the 30-day sales chart. */
+/** One point in the sales chart. */
 export interface DashboardSalesPoint {
   /** ISO `YYYY-MM-DD`. */
   date: string;
-  /** Aggregate sold quantity for the day (sum of `stock_movements.qty` where reason='sale'). */
+  /** Total units sold. */
   qty: number;
+  /** Total revenue (sum of qty * price). */
+  revenue: number;
+  /** Number of distinct receipts (poster_transaction_id). */
+  receipts: number;
 }
 
 /**

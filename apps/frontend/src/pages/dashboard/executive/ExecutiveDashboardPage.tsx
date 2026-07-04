@@ -234,7 +234,7 @@ export function ExecutiveDashboardPage() {
         />
       )}
 
-      <SecondaryRowGuard overview={overview.data} ecosystem={ecosystem.data} role={user?.role} />
+      <SecondaryRowGuard overview={overview.data} ecosystem={ecosystem.data} role={user?.role} rangePreset={range.range} />
 
       <ChainDetailSheet
         type={selectedChain}
@@ -249,10 +249,12 @@ function SecondaryRowGuard({
   overview,
   ecosystem,
   role,
+  rangePreset,
 }: {
   overview: DashboardOverview;
   ecosystem: DashboardEcosystem | null;
   role?: string;
+  rangePreset?: string;
 }) {
   const isEmpty =
     overview.kpis.total_open_requests === 0 &&
@@ -268,5 +270,5 @@ function SecondaryRowGuard({
       </Card>
     );
   }
-  return <DashboardSecondaryRow overview={overview} ecosystem={ecosystem} role={role} />;
+  return <DashboardSecondaryRow overview={overview} ecosystem={ecosystem} role={role} rangePreset={rangePreset} />;
 }

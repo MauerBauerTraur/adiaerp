@@ -38,10 +38,12 @@ export function DashboardSecondaryRow({
   overview,
   ecosystem,
   role,
+  rangePreset,
 }: {
   overview: DashboardOverview;
   ecosystem: DashboardEcosystem | null;
   role?: string;
+  rangePreset?: string;
 }) {
   const hideSalesWidgets =
     role === 'production_manager' || role === 'raw_warehouse_manager';
@@ -49,7 +51,7 @@ export function DashboardSecondaryRow({
   return (
     <div className="space-y-6">
       {!hideSalesWidgets && ecosystem !== null && (
-        <SalesChart points={ecosystem.sales_chart.days} />
+        <SalesChart points={ecosystem.sales_chart.days} rangePreset={rangePreset} />
       )}
 
       {!hideSalesWidgets && <ForecastsPanel />}
