@@ -122,35 +122,39 @@ async function applyLeftover(
   const productId = await resolveProductIdByIngredient(posterIngredientId);
   if (productId === null) return 'no-product';
 
-  // Persist unit cost price from Poster whenever it is provided.
-  // Only write > 0 values — a 0 prime_cost in Poster means "no cost data",
-  // not an actual zero-cost ingredient. Writing 0 would overwrite valid historical
-  // cost prices from earlier sync runs.
-  if (leftover.prime_cost !== undefined) {
-    const pc = Number(leftover.prime_cost);
+  // Persist unit cost price from Poster.
+  //
+  // Priority 1 — storage_ingredient_sum / storage_ingredient_left (sebestoimost ÷ qoldiq):
+  //   Most accurate: actual average unit cost from current inventory value.
+  //   Only the cost_price column is touched — min_qty, max_qty, production_location_id,
+  //   storage_location_id are never modified here.
+  //
+  // Priority 2 — prime_cost / 100:
+  //   Poster returns prime_cost in TIYIN (1/100 so'm), so we divide by 100.
+  //   Used when sum/left is not computable (empty stock or field absent from response).
+  //   Always overwrites existing cost_price so stale values get corrected each sync.
+  let costUpdated = false;
+  if (leftover.storage_ingredient_sum !== undefined) {
+    const sum = Number(leftover.storage_ingredient_sum);
+    const left = Number(leftover.storage_ingredient_left);
+    if (Number.isFinite(sum) && sum > 0 && Number.isFinite(left) && left > 0) {
+      const derivedCost = Math.round(sum / left);
+      await query(
+        `UPDATE products SET cost_price = $1, updated_at = now()
+         WHERE id = $2 AND cost_price IS DISTINCT FROM $1`,
+        [derivedCost, productId],
+      );
+      costUpdated = true;
+    }
+  }
+  if (!costUpdated && leftover.prime_cost !== undefined) {
+    const pc = Math.round(Number(leftover.prime_cost) / 100);
     if (Number.isFinite(pc) && pc > 0) {
       await query(
         `UPDATE products SET cost_price = $1, updated_at = now()
          WHERE id = $2 AND cost_price IS DISTINCT FROM $1`,
         [pc, productId],
       );
-    } else if (leftover.storage_ingredient_sum !== undefined && leftover.storage_ingredient_left !== undefined) {
-      // Fallback: when prime_cost = 0 or missing, derive cost from sum/qty ratio.
-      // storage_ingredient_sum is in so'm, storage_ingredient_left is in the ingredient unit (kg/l/pcs).
-      // Only apply when current stored qty > 0 and sum > 0. Only fills NULL or 0 cost_price — never
-      // overwrites a valid value that came from a previous prime_cost.
-      const sum = Number(leftover.storage_ingredient_sum);
-      const left = Number(leftover.storage_ingredient_left);
-      if (Number.isFinite(sum) && sum > 0 && Number.isFinite(left) && left > 0) {
-        const derivedCost = Math.round(sum / left);
-        await query(
-          `UPDATE products SET cost_price = $1, updated_at = now()
-           WHERE id = $2
-             AND (cost_price IS NULL OR cost_price = 0)
-             AND cost_price IS DISTINCT FROM $1`,
-          [derivedCost, productId],
-        );
-      }
     }
   }
 

@@ -334,6 +334,10 @@ productsRouter.patch(
       'recipe_locked' in body
         ? Boolean(body.recipe_locked)
         : prev.recipe_locked;
+    const sellPrice =
+      'sell_price' in body
+        ? (body.sell_price === null ? null : requireNonNegativeNumber(body, 'sell_price'))
+        : prev.sell_price;
 
     if (sku !== null && sku !== prev.sku) {
       const dup = await query<{ id: number }>(
@@ -348,11 +352,11 @@ productsRouter.patch(
     const { rows } = await query<ProductRow>(
       `UPDATE products SET name = $1, type = $2, unit = $3, sku = $4,
               production_location_id = $5, storage_location_id = $6,
-              min_qty = $7, max_qty = $8, recipe_locked = $9
-       WHERE id = $10
+              min_qty = $7, max_qty = $8, recipe_locked = $9, sell_price = $10
+       WHERE id = $11
        RETURNING ${PRODUCT_COLUMNS}`,
       [name, type, unit, sku, productionLocationId ?? null,
-       storageLocationId ?? null, minQty, maxQty, recipeLocked, productId],
+       storageLocationId ?? null, minQty, maxQty, recipeLocked, sellPrice ?? null, productId],
     );
     await writeAudit(poolRunner, {
       actorUserId: principal.userId,

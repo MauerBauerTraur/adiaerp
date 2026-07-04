@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   AlertCircle,
+  ArrowLeft,
   ChevronDown,
   ChevronRight,
   Eye,
@@ -793,6 +794,7 @@ function KanbanView({
 // ---------------------------------------------------------------------------
 export function ProductionOrdersPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { isReadOnly, isOperator, canActOn } = useCanAct();
   const { user } = useAuth();
   const isPm = user?.role === 'pm' || user?.role === 'super_admin';
@@ -802,11 +804,22 @@ export function ProductionOrdersPage() {
   const canActOnRow = (locationId: number | null | undefined) =>
     isPm || canActOn(locationId);
 
+  // URL-param based initial filter values (from dashboard shortcut links)
+  const fromDashboard = searchParams.get('from') === 'dashboard';
+  const urlStatus = searchParams.get('status') as ProductionOrderStatus | null;
+  const urlLocationId = searchParams.get('location_id');
+  const urlOverdue = searchParams.get('overdue') === '1';
+  const urlFrom = searchParams.get('date_from') ?? '';
+  const urlTo = searchParams.get('date_to') ?? '';
+
   const { notify } = useToast();
-  const [status, setStatus] = useState<ProductionOrderStatus | ''>('');
-  const [selectedSexId, setSelectedSexId] = useState<number | null>(myLocationId);
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
+  const [status, setStatus] = useState<ProductionOrderStatus | ''>(urlStatus ?? '');
+  const [selectedSexId, setSelectedSexId] = useState<number | null>(
+    urlLocationId ? Number(urlLocationId) : myLocationId,
+  );
+  const [showOverdueOnly, setShowOverdueOnly] = useState(urlOverdue);
+  const [dateFrom, setDateFrom] = useState(urlFrom);
+  const [dateTo, setDateTo] = useState(urlTo);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<ProductionOrder | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ProductionOrder | null>(null);
@@ -888,8 +901,18 @@ export function ProductionOrdersPage() {
   }, [rows, myLocationId]);
 
   const effectiveSexId = myLocationId ?? selectedSexId;
-  const filteredRows =
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const baseRows =
     effectiveSexId !== null ? rows.filter((r) => r.location_id === effectiveSexId) : rows;
+  const filteredRows = showOverdueOnly
+    ? baseRows.filter(
+        (r) =>
+          r.deadline != null &&
+          r.deadline < todayIso &&
+          r.status !== 'done' &&
+          r.status !== 'cancelled',
+      )
+    : baseRows;
 
   const subOrdersMap = useMemo(() => {
     const m = new Map<number, ProductionOrder[]>();
@@ -963,6 +986,30 @@ export function ProductionOrdersPage() {
           </div>
         }
       />
+
+      {fromDashboard && (
+        <button
+          type="button"
+          onClick={() => navigate(-1)}
+          className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft className="size-4" />
+          Ortga
+        </button>
+      )}
+
+      {showOverdueOnly && (
+        <div className="flex items-center gap-2 rounded-xl bg-destructive/10 border border-destructive/20 px-4 py-2.5 text-sm font-medium text-destructive">
+          <span>Muddati o&apos;tgan zayafkalar ko&apos;rsatilmoqda</span>
+          <button
+            type="button"
+            onClick={() => setShowOverdueOnly(false)}
+            className="ml-auto text-xs underline opacity-80 hover:opacity-100"
+          >
+            Tozalash
+          </button>
+        </div>
+      )}
 
       {/* Filter bar */}
       <div className="space-y-2">

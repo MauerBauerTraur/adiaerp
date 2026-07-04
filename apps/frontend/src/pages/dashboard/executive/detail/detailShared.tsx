@@ -16,6 +16,8 @@ export interface SubKpiTile {
   value: string;
   caption?: string;
   tone?: 'default' | 'danger' | 'warn' | 'success';
+  /** When set, the tile becomes a clickable button. */
+  onClick?: () => void;
 }
 
 export function SubKpiGrid({
@@ -49,8 +51,9 @@ function SubKpiCell({
   tone: ChainTone;
 }) {
   const toneClass = TILE_TONE_CLASS[tile.tone ?? 'default'];
-  return (
-    <div className="rounded-md border border-border/40 bg-surface-2/40 p-3">
+  const isClickable = tile.onClick !== undefined;
+  const inner = (
+    <>
       <p className="truncate text-[10px] uppercase tracking-wide text-muted-foreground">
         {tile.label}
       </p>
@@ -68,6 +71,25 @@ function SubKpiCell({
           {tile.caption}
         </p>
       )}
+    </>
+  );
+
+  if (isClickable) {
+    return (
+      <button
+        type="button"
+        onClick={tile.onClick}
+        className="rounded-md border border-border/40 bg-surface-2/40 p-3 text-left transition-colors hover:bg-accent hover:border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        title="Ko'rish"
+      >
+        {inner}
+      </button>
+    );
+  }
+
+  return (
+    <div className="rounded-md border border-border/40 bg-surface-2/40 p-3">
+      {inner}
     </div>
   );
 }

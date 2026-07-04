@@ -17,6 +17,7 @@ import {
   ReceiptText,
   FileText,
   Banknote,
+  BarChart2,
   type LucideIcon,
 } from 'lucide-react';
 import type { Role } from './types';
@@ -272,6 +273,12 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: 'Mahsulotlar',
         icon: Package,
         roles: MANAGER_ROLES,
+      },
+      {
+        path: '/reports/profit',
+        label: 'Foyda hisoboti',
+        icon: BarChart2,
+        roles: ['super_admin', 'pm'],
       },
       {
         path: '/locations',

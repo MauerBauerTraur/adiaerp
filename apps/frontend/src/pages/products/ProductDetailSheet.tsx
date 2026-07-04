@@ -102,6 +102,25 @@ function formatQty(qty: number, unitStr: string): string {
   return `${qty % 1 === 0 ? qty : qty.toFixed(3)} ${label}`;
 }
 
+/** Cost contributed by a single recipe line per unit of the parent product.
+ *  For semi-finished components, recurses into the sub-recipe. */
+function computeLineCostPerUnit(
+  line: RecipeLine,
+  allProducts: Product[],
+  subRecipes: Map<number, RecipeLine[]>,
+  depth = 0,
+): number {
+  const comp = allProducts.find((p) => p.id === line.component_product_id);
+  const isSemi = line.component_type === 'semi' || line.component_type === 'finished';
+  const sub = subRecipes.get(line.component_product_id);
+  if (isSemi && sub && sub.length > 0 && depth < 4) {
+    const subUnitCost = computeBomCost(sub, allProducts, subRecipes, depth + 1);
+    return subUnitCost * line.qty_per_unit;
+  }
+  const cp = comp?.cost_price ?? line.component_cost_price ?? 0;
+  return (cp ?? 0) * line.qty_per_unit;
+}
+
 /** Compute BOM cost per unit of the product from recipe lines.
  *  For semi-finished components, recurse into their sub-recipe instead of
  *  using the (potentially-wrong) stored cost_price. Returns 0 if cost data
@@ -194,6 +213,15 @@ function RecipeLineRow({
               {formatQty(displayQty, unitStr)}
             </span>
           )}
+          {depth === 0 && (() => {
+            const lineCost = computeLineCostPerUnit(line, allProducts, subRecipes);
+            if (lineCost <= 0) return null;
+            return (
+              <p className="text-[10px] text-amber-600 dark:text-amber-400 font-medium">
+                {lineCost.toLocaleString('uz-UZ', { maximumFractionDigits: 0 })} so'm
+              </p>
+            );
+          })()}
         </div>
       </div>
     </div>
@@ -263,6 +291,11 @@ export function ProductDetailSheet({
   const [ordersKey, setOrdersKey] = useState(0);
   // Incrementing this forces the stock tab to refetch (after min/max save)
   const [stockKey, setStockKey] = useState(0);
+  // Sell price inline editing
+  const [editingSellPrice, setEditingSellPrice] = useState(false);
+  const [sellPriceInput, setSellPriceInput] = useState('');
+  // undefined = use product.sell_price; null/number = local override after save
+  const [localSellPrice, setLocalSellPrice] = useState<number | null | undefined>(undefined);
 
   // Reset all state when product changes
   useEffect(() => {
@@ -282,6 +315,9 @@ export function ProductDetailSheet({
     setDeleteOrderTarget(null);
     setBusyOrderId(null);
     setOrdersKey(0);
+    setEditingSellPrice(false);
+    setSellPriceInput('');
+    setLocalSellPrice(undefined);
 
     if (effectiveType(product) !== 'raw') {
       let cancelled = false;
@@ -451,7 +487,35 @@ export function ProductDetailSheet({
     }
   }
 
+  async function saveSellPrice() {
+    if (!product) return;
+    const parsed = parseFloat(sellPriceInput.replace(/\s/g, ''));
+    if (isNaN(parsed) || parsed < 0) {
+      notify('error', 'Noto\'g\'ri narx kiritildi.');
+      return;
+    }
+    try {
+      await apiRequest(`/api/products/${product.id}`, {
+        method: 'PATCH',
+        body: { sell_price: parsed },
+      });
+      setLocalSellPrice(parsed);
+      setEditingSellPrice(false);
+      notify('success', 'Sotuv narxi saqlandi.');
+    } catch (err: unknown) {
+      notify('error', err instanceof ApiError ? err.message : 'Xato yuz berdi.');
+    }
+  }
+
   if (!product) return null;
+
+  // Fresh stock total — computed from the stock tab rows (fetched from API)
+  // which are more up-to-date than product.total_qty (from the products list).
+  const freshTotalQty = stock !== null ? stock.reduce((s, r) => s + Number(r.qty), 0) : null;
+
+  const canEditSellPrice = user?.role === 'pm' || user?.role === 'super_admin';
+  // Displayed sell price: local override after save, else server value
+  const displaySellPrice = localSellPrice !== undefined ? localSellPrice : (product.sell_price ?? null);
 
   const category = deriveCategory(product);
   const style = PRODUCT_CATEGORY_STYLE[category];
@@ -493,9 +557,6 @@ export function ProductDetailSheet({
               </p>
               {/* Narx ma'lumotlari */}
               {(() => {
-                // For semi/finished products with a loaded recipe, compute BOM cost
-                // from raw ingredients instead of using Poster's prime_cost (which
-                // may be wrong for semi-finished products).
                 const isNonRawProduct = effectiveType(product) !== 'raw';
                 const bomCost =
                   isNonRawProduct && recipe && recipe.length > 0
@@ -504,16 +565,18 @@ export function ProductDetailSheet({
                 const displayCost = bomCost != null && bomCost > 0 ? bomCost : (product.cost_price ?? null);
                 const useBom = bomCost != null && bomCost > 0;
                 const hasCost = displayCost != null && displayCost > 0;
-                const hasSell  = (product.sell_price ?? 0) > 0;
-                const hasQty   = (product.total_qty ?? 0) > 0;
-                if (!hasCost && !hasSell && !hasQty) return null;
+                const hasSell = (displaySellPrice ?? 0) > 0;
+                // Use freshTotalQty (from live stock API) when available, else fall back to product.total_qty
+                const liveQty = freshTotalQty ?? product.total_qty;
+                const hasQty = (liveQty ?? 0) > 0;
+                if (!hasCost && !hasSell && !hasQty && !canEditSellPrice) return null;
                 return (
                   <div className="mt-3 flex flex-wrap gap-4">
                     {hasQty && (
                       <div>
                         <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Qoldiq</p>
                         <p className="text-base font-bold">
-                          {(product.total_qty ?? 0).toLocaleString('uz-UZ')}
+                          {(liveQty ?? 0).toLocaleString('uz-UZ')}
                           <span className="ml-1 text-xs font-normal text-muted-foreground">{UNIT_LABELS[product.unit]}</span>
                         </p>
                       </div>
@@ -529,20 +592,65 @@ export function ProductDetailSheet({
                         </p>
                       </div>
                     )}
-                    {hasSell && (
+                    {/* Sotuv narxi — editable for pm/super_admin */}
+                    {editingSellPrice ? (
+                      <div className="flex flex-col gap-1">
+                        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Sotuv narxi</p>
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            min="0"
+                            value={sellPriceInput}
+                            onChange={(e) => setSellPriceInput(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') void saveSellPrice(); if (e.key === 'Escape') setEditingSellPrice(false); }}
+                            autoFocus
+                            className="w-28 rounded-md border border-border bg-background px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                          />
+                          <button type="button" onClick={() => void saveSellPrice()} className="rounded-md bg-primary px-2 py-1 text-xs text-primary-foreground hover:bg-primary/90">
+                            <Check className="size-3" />
+                          </button>
+                          <button type="button" onClick={() => setEditingSellPrice(false)} className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent">
+                            <X className="size-3" />
+                          </button>
+                        </div>
+                      </div>
+                    ) : hasSell ? (
+                      <div className="group relative">
+                        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Sotuv narxi</p>
+                        <div className="flex items-center gap-1">
+                          <p className="text-base font-bold text-emerald-600 dark:text-emerald-400">
+                            {displaySellPrice!.toLocaleString('uz-UZ', { maximumFractionDigits: 0 })}
+                            <span className="ml-1 text-xs font-normal">so'm</span>
+                          </p>
+                          {canEditSellPrice && (
+                            <button
+                              type="button"
+                              onClick={() => { setSellPriceInput(String(displaySellPrice ?? '')); setEditingSellPrice(true); }}
+                              className="rounded p-0.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-accent hover:text-foreground transition-opacity"
+                              title="Narxni tahrirlash"
+                            >
+                              <Pencil className="size-3" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ) : canEditSellPrice ? (
                       <div>
                         <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Sotuv narxi</p>
-                        <p className="text-base font-bold text-emerald-600 dark:text-emerald-400">
-                          {product.sell_price!.toLocaleString('uz-UZ', { maximumFractionDigits: 0 })}
-                          <span className="ml-1 text-xs font-normal">so'm</span>
-                        </p>
+                        <button
+                          type="button"
+                          onClick={() => { setSellPriceInput(''); setEditingSellPrice(true); }}
+                          className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          <Plus className="size-3" /> Narx qo'shish
+                        </button>
                       </div>
-                    )}
+                    ) : null}
                     {hasCost && hasSell && (
                       <div>
                         <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Ustama</p>
                         <p className="text-base font-bold text-blue-600 dark:text-blue-400">
-                          {(((product.sell_price! - displayCost!) / displayCost!) * 100).toFixed(1)}%
+                          {(((displaySellPrice! - displayCost!) / displayCost!) * 100).toFixed(1)}%
                         </p>
                       </div>
                     )}

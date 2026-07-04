@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Bar,
   BarChart,
@@ -14,14 +15,7 @@ import { useApiQuery } from '@/hooks/useApiQuery';
 import { dateRangeToQuery, type DateRangeValue } from '@/components/DateRangeFilter';
 import { formatQty, formatRelative } from '@/lib/format';
 import type { DashboardProductionDetail } from '@/lib/types';
-import {
-  TrackerBar,
-  type TrackerCellStatus,
-  type TrackerRow,
-} from '@/components/charts/TrackerBar';
 import { PanelSection, PanelSkeleton, SubKpiGrid } from './detailShared';
-
-type SexLoad = DashboardProductionDetail['sex_load'][number];
 
 /**
  * Sprint C — Production (ishlab chiqarish) detail panel.
@@ -53,6 +47,9 @@ export function ProductionDetailPanelView({
 }: {
   data: DashboardProductionDetail;
 }) {
+  const navigate = useNavigate();
+  const today = new Date().toISOString().slice(0, 10);
+
   const chartData = useMemo(
     () =>
       data.daily_io.map((p) => ({
@@ -64,10 +61,10 @@ export function ProductionDetailPanelView({
     [data.daily_io],
   );
 
-  const trackerRows = useMemo<TrackerRow[]>(
-    () => buildTrackerRows(data.sex_load),
-    [data.sex_load],
-  );
+  function goTo(params: Record<string, string>) {
+    const q = new URLSearchParams({ ...params, from: 'dashboard' });
+    navigate(`/production-orders?${q.toString()}`);
+  }
 
   return (
     <div className="flex flex-col gap-5" data-testid="production-detail-panel">
@@ -77,20 +74,24 @@ export function ProductionDetailPanelView({
           {
             label: 'Faol zayafkalar',
             value: formatQty(data.kpis.active_orders),
+            onClick: () => goTo({ status: 'in_progress' }),
           },
           {
             label: 'Bugun bajarildi',
             value: formatQty(data.kpis.done_today),
             tone: 'success',
+            onClick: () => goTo({ status: 'done', date_from: today, date_to: today }),
           },
           {
             label: "Muddat o'tgan",
             value: formatQty(data.kpis.overdue),
             tone: data.kpis.overdue > 0 ? 'danger' : 'default',
+            onClick: data.kpis.overdue > 0 ? () => goTo({ overdue: '1' }) : undefined,
           },
           {
-            label: 'Sex soni',
-            value: formatQty(data.kpis.sex_count),
+            label: 'Barcha zayafkalar',
+            value: formatQty(data.kpis.active_orders + data.kpis.overdue),
+            onClick: () => goTo({}),
           },
         ]}
       />
@@ -209,18 +210,48 @@ export function ProductionDetailPanelView({
       </PanelSection>
 
       <PanelSection
-        title="Sex yuklamasi"
-        description="Har sexning ochiq zayafkalari va rejalashtirilgan hajmi."
+        title="Sexlar — yuklamasi"
+        description="Bosing — shu sexning barcha zayafkalari ochiladi."
       >
         {data.sex_load.length === 0 ? (
           <p className="py-6 text-center text-xs text-muted-foreground">
             Sex yo'q.
           </p>
         ) : (
-          <TrackerBar
-            rows={trackerRows}
-            columnLabels={['1', '2', '3', '4', '5', '6', '7']}
-          />
+          <ul className="flex flex-col gap-1.5">
+            {data.sex_load.map((load) => {
+              const ratio = load.planned_qty > 0 ? load.open_orders / load.planned_qty : 0;
+              const barColor = load.open_orders === 0 ? 'bg-muted/40' : ratio < 0.5 ? 'bg-emerald-500' : ratio < 1 ? 'bg-amber-400' : 'bg-destructive';
+              const pct = Math.min(Math.round(ratio * 100), 100);
+
+              return (
+                <li key={load.location_id}>
+                  <button
+                    type="button"
+                    onClick={() => goTo({ location_id: String(load.location_id) })}
+                    className="w-full rounded-md border border-border/40 bg-surface-2/40 px-3 py-2.5 text-left transition-colors hover:bg-accent hover:border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="truncate text-xs font-medium text-foreground">
+                        {load.location_name}
+                      </span>
+                      <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                        {load.open_orders} zayafka
+                      </span>
+                    </div>
+                    {load.planned_qty > 0 && (
+                      <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-muted/30">
+                        <div
+                          className={`h-full rounded-full transition-all ${barColor}`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    )}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
         )}
       </PanelSection>
     </div>
@@ -241,24 +272,3 @@ function shortDate(iso: string): string {
   return `${m[3]}.${m[2]}`;
 }
 
-/**
- * Build tracker rows from sex-load. Until per-day workload arrives from
- * the backend, encode a deterministic visual proxy: rows of seven cells
- * where intensity reflects `open_orders / planned_qty`.
- */
-function buildTrackerRows(loads: SexLoad[]): TrackerRow[] {
-  return loads.slice(0, 6).map((load) => {
-    const ratio =
-      load.planned_qty > 0 ? load.open_orders / load.planned_qty : 0;
-    let status: TrackerCellStatus = 'empty';
-    if (load.open_orders === 0) status = 'empty';
-    else if (ratio < 0.5) status = 'ok';
-    else if (ratio < 1) status = 'warn';
-    else status = 'danger';
-    return {
-      label: load.location_name,
-      caption: `${load.open_orders}/${formatQty(load.planned_qty)}`,
-      days: Array.from({ length: 7 }, () => status),
-    };
-  });
-}

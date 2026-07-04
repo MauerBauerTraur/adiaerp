@@ -33,6 +33,7 @@ import { nakladnoyRouter } from './nakladnoy.js';
 import { cashShiftsRouter } from './cashShifts.js';
 import { safeExpensesRouter } from './safeExpenses.js';
 import { posterSuppliesRouter } from './posterSupplies.js';
+import { reportsRouter } from './reports.js';
 
 export const apiRouter: Router = Router();
 
@@ -64,6 +65,8 @@ apiRouter.use('/cash-shifts', cashShiftsRouter);
 apiRouter.use('/safe-expenses', safeExpensesRouter);
 // M10 — Poster Поставки (supply deliveries) sync + read.
 apiRouter.use('/poster-supplies', posterSuppliesRouter);
+// Reports — analytical aggregates (PM/super_admin only).
+apiRouter.use('/reports', reportsRouter);
 // EPIC 4.3 (2026-05-29) — the "Yetkazib berish" / delivery module was removed.
 // Departments now ship directly and the receiver accepts on arrival; there is
 // no separate courier-assignment surface. The replenishment state machine

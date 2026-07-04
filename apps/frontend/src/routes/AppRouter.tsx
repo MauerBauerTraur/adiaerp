@@ -31,6 +31,7 @@ import { CashShiftsPage } from '@/pages/cashier/CashShiftsPage';
 import { SafeExpensesPage } from '@/pages/cashier/SafeExpensesPage';
 import { NakladnoyPage } from '@/pages/cashier/NakladnoyPage';
 import { PosterSuppliesPage } from '@/pages/poster-supplies/PosterSuppliesPage';
+import { ProfitReportPage } from '@/pages/reports/ProfitReportPage';
 
 /**
  * Application routes (phase-1-mvp.md §2, §6).
@@ -273,6 +274,16 @@ export function AppRouter() {
           element={
             <RoleRoute allow={['super_admin', 'pm', 'raw_warehouse_manager']}>
               <PosterSuppliesPage />
+            </RoleRoute>
+          }
+        />
+
+        {/* Reports — PM/super_admin analytical pages. */}
+        <Route
+          path="/reports/profit"
+          element={
+            <RoleRoute allow={['super_admin', 'pm']}>
+              <ProfitReportPage />
             </RoleRoute>
           }
         />
