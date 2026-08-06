@@ -15,6 +15,8 @@ import { RequestsPage } from '@/pages/requests/RequestsPage';
 import { ProductionOrdersPage } from '@/pages/production-orders/ProductionOrdersPage';
 import { ProductionOrderDetailPage } from '@/pages/production-orders/ProductionOrderDetailPage';
 import { WarehouseDispatchPage } from '@/pages/production-orders/WarehouseDispatchPage';
+import { ProductionCostReport } from '@/pages/production-orders/ProductionCostReport';
+import { RawMaterialsUsagePage } from '@/pages/production-orders/RawMaterialsUsagePage';
 import { StockAlertsPage } from '@/pages/products/StockAlertsPage';
 import { PurchaseOrdersPage } from '@/pages/purchase-orders/PurchaseOrdersPage';
 import { DashboardPage } from '@/pages/dashboard/DashboardPage';
@@ -32,6 +34,11 @@ import { SafeExpensesPage } from '@/pages/cashier/SafeExpensesPage';
 import { NakladnoyPage } from '@/pages/cashier/NakladnoyPage';
 import { PosterSuppliesPage } from '@/pages/poster-supplies/PosterSuppliesPage';
 import { ProfitReportPage } from '@/pages/reports/ProfitReportPage';
+import { StockReportPage } from '@/pages/stock/StockReportPage';
+import { TransferPage } from '@/pages/stock/TransferPage';
+import { ZagotovkaPage } from '@/pages/production-orders/ZagotovkaPage';
+import { KremKaymokchiPage } from '@/pages/production-orders/KremKaymokchiPage';
+import { SotuvlarPage } from '@/pages/sales/SotuvlarPage';
 
 /**
  * Application routes (phase-1-mvp.md §2, §6).
@@ -126,9 +133,28 @@ export function AppRouter() {
           path="/stock"
           element={
             <StockPage
-              title="Ombor qoldig‘i"
-              description="Butun zanjir bo‘yicha qoldiq va harakatlar."
+              title="Ombor qoldig'i"
+              description="Butun zanjir bo'yicha qoldiq va harakatlar."
             />
+          }
+        />
+
+        {/* Stock transfer between warehouses. */}
+        <Route
+          path="/transfer"
+          element={
+            <RoleRoute
+              allow={[
+                'super_admin',
+                'pm',
+                'raw_warehouse_manager',
+                'production_manager',
+                'supply_manager',
+                'central_warehouse_manager',
+              ]}
+            >
+              <TransferPage />
+            </RoleRoute>
           }
         />
 
@@ -177,6 +203,22 @@ export function AppRouter() {
               ]}
             >
               <ProductionOrderDetailPage />
+            </RoleRoute>
+          }
+        />
+        <Route
+          path="/production-cost-report"
+          element={
+            <RoleRoute allow={['super_admin', 'pm', 'production_manager']}>
+              <ProductionCostReport />
+            </RoleRoute>
+          }
+        />
+        <Route
+          path="/raw-materials-usage"
+          element={
+            <RoleRoute allow={['super_admin', 'pm', 'production_manager']}>
+              <RawMaterialsUsagePage />
             </RoleRoute>
           }
         />
@@ -284,6 +326,54 @@ export function AppRouter() {
           element={
             <RoleRoute allow={['super_admin', 'pm']}>
               <ProfitReportPage />
+            </RoleRoute>
+          }
+        />
+        <Route
+          path="/reports/stock"
+          element={
+            <RoleRoute
+              allow={[
+                'super_admin',
+                'pm',
+                'raw_warehouse_manager',
+                'production_manager',
+                'supply_manager',
+                'central_warehouse_manager',
+                'store_manager',
+              ]}
+            >
+              <StockReportPage />
+            </RoleRoute>
+          }
+        />
+
+        {/* Zagotovka workflow */}
+        <Route
+          path="/zagotovka"
+          element={
+            <RoleRoute allow={['super_admin', 'pm', 'production_manager', 'raw_warehouse_manager']}>
+              <ZagotovkaPage />
+            </RoleRoute>
+          }
+        />
+
+        {/* Krem kaymokchi */}
+        <Route
+          path="/krem-kaymok"
+          element={
+            <RoleRoute allow={['super_admin', 'pm', 'production_manager']}>
+              <KremKaymokchiPage />
+            </RoleRoute>
+          }
+        />
+
+        {/* Sotuvlar view */}
+        <Route
+          path="/sotuvlar"
+          element={
+            <RoleRoute allow={['super_admin', 'pm', 'store_manager', 'central_warehouse_manager']}>
+              <SotuvlarPage />
             </RoleRoute>
           }
         />

@@ -39,7 +39,9 @@ export type NotificationType =
   // EPIC 8.4 — nakladnoy document created (material requisition).
   | 'nakladnoy_created'
   // EPIC 8.5 — cash shift submitted by store manager.
-  | 'cash_shift_submitted';
+  | 'cash_shift_submitted'
+  // batch xomashyo dispatch — sex manageriga yuboriladi
+  | 'dispatch_sent';
 
 /**
  * Inline keyboard payload persisted into `notifications.inline_callback`

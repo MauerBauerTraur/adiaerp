@@ -28,7 +28,7 @@ export type ProductCategory =
   | 'raw'
   | 'finished';
 
-export type ProductType = 'raw' | 'semi' | 'finished';
+export type ProductType = 'raw' | 'semi' | 'finished' | 'gp';
 
 /** Name substrings (lower-cased, Latin + Cyrillic) → category. Order matters. */
 const NAME_RULES: ReadonlyArray<[readonly string[], ProductCategory]> = [
@@ -61,12 +61,14 @@ export function hasReadyPrefix(name: string): boolean {
 
 /** The effective product type, upgrading `Г/П`-prefixed names to finished. */
 export function effectiveType(name: string, type: ProductType): ProductType {
+  if (type === 'gp') return 'gp';
   if (hasReadyPrefix(name)) return 'finished';
   return type;
 }
 
 /** Derive the fine-grained category for a product (EPIC 1.3). */
 export function deriveCategory(name: string, type: ProductType): ProductCategory {
+  if (type === 'gp') return 'finished';
   const lower = name.toLowerCase();
   for (const [needles, category] of NAME_RULES) {
     if (needles.some((n) => lower.includes(n))) return category;

@@ -31,12 +31,14 @@ export const TYPE_LABELS: Record<string, string> = {
   raw: 'Xomashyo',
   semi: 'Yarim tayyor',
   finished: 'Tayyor',
+  gp: 'Готовая продукция',
 };
 
 export const TYPE_CHIP: Record<string, string> = {
   raw: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400',
   semi: 'bg-amber-500/15 text-amber-700 dark:text-amber-400',
   finished: 'bg-purple-500/15 text-purple-700 dark:text-purple-400',
+  gp: 'bg-sky-500/15 text-sky-700 dark:text-sky-400',
 };
 
 // ---------------------------------------------------------------------------

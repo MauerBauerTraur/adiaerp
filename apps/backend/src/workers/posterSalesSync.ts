@@ -16,7 +16,6 @@ import {
   fallbackPollTransactions,
   processPendingWebhookEvents,
 } from '../integrations/poster/salesSync.js';
-import { checkSoldProductsAndCreateOrders } from '../services/autoOrder.js';
 
 export const POSTER_SALES_WEBHOOK_SCHEDULE = '*/1 * * * *';
 export const POSTER_SALES_FALLBACK_SCHEDULE = '*/30 * * * *';
@@ -62,16 +61,17 @@ export async function runWebhookCycle(): Promise<void> {
           `store-misses=${summary.storeMisses}`,
       );
     }
-    // When new sales were ingested, check if any sold product has stock below min_qty.
-    if (summary.linesInserted > 0) {
-      const autoResult = await checkSoldProductsAndCreateOrders();
-      if (autoResult.created > 0 || autoResult.skipped > 0) {
-        console.log(
-          `[poster-sales-webhook] auto-orders: checked=${autoResult.checked} ` +
-            `created=${autoResult.created} skipped=${autoResult.skipped}`,
-        );
-      }
-    }
+    // AUTO-ORDER CREATION TEMPORARILY DISABLED — manual only for now.
+    // To re-enable: uncomment the block below.
+    // if (summary.linesInserted > 0) {
+    //   const autoResult = await checkSoldProductsAndCreateOrders();
+    //   if (autoResult.created > 0 || autoResult.skipped > 0) {
+    //     console.log(
+    //       `[poster-sales-webhook] auto-orders: checked=${autoResult.checked} ` +
+    //         `created=${autoResult.created} skipped=${autoResult.skipped}`,
+    //     );
+    //   }
+    // }
   } catch (err) {
     console.error('[poster-sales-webhook] cycle failed:', (err as Error).message);
   } finally {
@@ -93,15 +93,15 @@ export async function runFallbackCycle(): Promise<void> {
           `lines=${summary.linesInserted} moves=${summary.movementsApplied}`,
       );
     }
-    // Always check auto-orders on fallback cycle (every 30 min) so that products
-    // that fell below min_qty from older sales are caught even with no new lines.
-    const autoResult = await checkSoldProductsAndCreateOrders();
-    if (autoResult.created > 0 || autoResult.checked > 0) {
-      console.log(
-        `[poster-sales-fallback] auto-orders: checked=${autoResult.checked} ` +
-          `created=${autoResult.created} skipped=${autoResult.skipped}`,
-      );
-    }
+    // AUTO-ORDER CREATION TEMPORARILY DISABLED — manual only for now.
+    // To re-enable: uncomment the block below.
+    // const autoResult = await checkSoldProductsAndCreateOrders();
+    // if (autoResult.created > 0 || autoResult.checked > 0) {
+    //   console.log(
+    //     `[poster-sales-fallback] auto-orders: checked=${autoResult.checked} ` +
+    //       `created=${autoResult.created} skipped=${autoResult.skipped}`,
+    //   );
+    // }
   } catch (err) {
     console.error('[poster-sales-fallback] cycle failed:', (err as Error).message);
   } finally {

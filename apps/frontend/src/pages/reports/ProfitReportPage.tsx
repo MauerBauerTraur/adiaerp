@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react';
-import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { ChevronLeft, ChevronRight, TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { FilterSheet, FilterField, FilterTrigger } from '@/components/ui/filter-sheet';
 import { Card } from '@/components/ui/card';
 import {
   Table,
@@ -20,9 +21,12 @@ type ProfitRow = {
   product_unit: string;
   total_qty: number;
   cost_price: number | null;
+  production_cost: number | null;
   sell_price: number | null;
   foyda_per_unit: number | null;
   total_foyda: number | null;
+  sof_foyda_per_unit: number | null;
+  total_sof_foyda: number | null;
 };
 
 type RangePreset = 'today' | 'week' | 'month';
@@ -43,12 +47,11 @@ function getRangeDates(preset: RangePreset): { from: string; to: string } {
     return { from: today, to: today };
   }
   if (preset === 'week') {
-    const dow = now.getDay() === 0 ? 6 : now.getDay() - 1; // Monday-based
+    const dow = now.getDay() === 0 ? 6 : now.getDay() - 1;
     const mon = new Date(now);
     mon.setDate(now.getDate() - dow);
     return { from: fmt(mon), to: fmt(now) };
   }
-  // month
   const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
   return { from: fmt(firstDay), to: fmt(now) };
 }
@@ -73,28 +76,55 @@ function SummaryCard({
   );
 }
 
+function FoydaCell({ value }: { value: number | null }) {
+  if (value == null) return <span className="text-muted-foreground">—</span>;
+  const pos = value > 0;
+  const neg = value < 0;
+  return (
+    <span className={`inline-flex items-center gap-1 font-medium ${pos ? 'text-emerald-600 dark:text-emerald-400' : neg ? 'text-rose-600 dark:text-rose-400' : 'text-muted-foreground'}`}>
+      {pos ? <TrendingUp className="size-3" /> : neg ? <TrendingDown className="size-3" /> : <Minus className="size-3" />}
+      {value.toLocaleString('uz-UZ', { maximumFractionDigits: 0 })} so'm
+    </span>
+  );
+}
+
+const PAGE_SIZE = 50;
+
 export function ProfitReportPage() {
   const [preset, setPreset] = useState<RangePreset>('month');
+  const [page, setPage] = useState(0);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [draftPreset, setDraftPreset] = useState<RangePreset>('month');
   const { from, to } = getRangeDates(preset);
+
+  useEffect(() => { setPage(0); }, [preset]);
+
+  const activeCount = preset !== 'month' ? 1 : 0;
+
+  function openFilter() { setDraftPreset(preset); setFilterOpen(true); }
+  function applyFilter() { setPreset(draftPreset); setFilterOpen(false); }
+  function clearFilter() { setDraftPreset('month'); setPreset('month'); setFilterOpen(false); }
 
   const { data, isLoading, error } = useApiQuery<{ items: ProfitRow[]; from: string; to: string }>(
     `/api/reports/profit?from=${from}&to=${to}`,
   );
 
   const items = data?.items ?? [];
+  const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+  const pageItems = items.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
   const totals = useMemo(() => {
     let totalQty = 0;
     let totalFoyda = 0;
+    let totalSofFoyda = 0;
     let withFoyda = 0;
+    let withSofFoyda = 0;
     for (const row of items) {
       totalQty += row.total_qty;
-      if (row.total_foyda != null) {
-        totalFoyda += row.total_foyda;
-        withFoyda++;
-      }
+      if (row.total_foyda != null) { totalFoyda += row.total_foyda; withFoyda++; }
+      if (row.total_sof_foyda != null) { totalSofFoyda += row.total_sof_foyda; withSofFoyda++; }
     }
-    return { totalQty, totalFoyda, withFoyda, total: items.length };
+    return { totalQty, totalFoyda, totalSofFoyda, withFoyda, withSofFoyda, total: items.length };
   }, [items]);
 
   return (
@@ -104,8 +134,8 @@ export function ProfitReportPage() {
         description="Ishlab chiqarilgan mahsulotlar bo'yicha tan narxi, sotuv narxi va foyda"
       />
 
-      {/* Range selector */}
-      <div className="flex gap-2">
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-2">
         {RANGE_OPTIONS.map((opt) => (
           <button
             key={opt.value}
@@ -120,28 +150,62 @@ export function ProfitReportPage() {
             {opt.label}
           </button>
         ))}
-        <span className="ml-auto flex items-center text-xs text-muted-foreground">
-          {from} — {to}
-        </span>
+        <span className="text-xs text-muted-foreground">{from} — {to}</span>
+        <div className="ml-auto">
+          <FilterTrigger onClick={openFilter} activeCount={activeCount} />
+        </div>
       </div>
+
+      <FilterSheet
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilter}
+        onClear={clearFilter}
+        activeCount={activeCount}
+      >
+        <FilterField label="Sana oraligi">
+          <div className="flex flex-col gap-2">
+            {RANGE_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setDraftPreset(opt.value)}
+                className={`w-full rounded-lg border px-3 py-2 text-sm font-medium text-left transition-colors ${
+                  draftPreset === opt.value
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </FilterField>
+      </FilterSheet>
 
       {/* Summary cards */}
       {!isLoading && !error && items.length > 0 && (
-        <div className="grid gap-4 sm:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-4">
           <SummaryCard
             label="Jami ishlab chiqarildi"
             value={`${totals.totalQty.toLocaleString('uz-UZ')} dona`}
             sub={`${totals.total} turdagi mahsulot`}
           />
           <SummaryCard
-            label="Jami foyda"
+            label="Jami foyda (sotuv − xarid)"
             value={formatSom(totals.totalFoyda)}
-            sub={`${totals.withFoyda}/${totals.total} mahsulotda narx belgilangan`}
+            sub={`${totals.withFoyda}/${totals.total} mahsulotda belgilangan`}
             accent={totals.totalFoyda >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}
           />
           <SummaryCard
-            label="O'rtacha foyda/dona"
-            value={totals.totalQty > 0 ? formatSom(totals.totalFoyda / totals.totalQty) : '—'}
+            label="Sof foyda (sotuv − ish. narxi)"
+            value={formatSom(totals.totalSofFoyda)}
+            sub={`${totals.withSofFoyda}/${totals.total} mahsulotda belgilangan`}
+            accent={totals.totalSofFoyda >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}
+          />
+          <SummaryCard
+            label="O'rtacha sof foyda/dona"
+            value={totals.totalQty > 0 ? formatSom(totals.totalSofFoyda / totals.totalQty) : '—'}
           />
         </div>
       )}
@@ -160,18 +224,18 @@ export function ProfitReportPage() {
                 <TableRow>
                   <TableHead>Mahsulot</TableHead>
                   <TableHead className="text-right">Miqdor</TableHead>
-                  <TableHead className="text-right">Tan narxi</TableHead>
+                  <TableHead className="text-right">Xarid narxi</TableHead>
+                  <TableHead className="text-right">Ish. narxi</TableHead>
                   <TableHead className="text-right">Sotuv narxi</TableHead>
                   <TableHead className="text-right">Foyda/dona</TableHead>
-                  <TableHead className="text-right">Jami foyda</TableHead>
+                  <TableHead className="text-right">Sof foyda/dona</TableHead>
+                  <TableHead className="text-right">Jami sof foyda</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {items.map((row) => {
+                {pageItems.map((row) => {
                   const unitLabel = UNIT_LABELS[row.product_unit as keyof typeof UNIT_LABELS] ?? row.product_unit;
-                  const hasFoyda = row.foyda_per_unit != null;
-                  const foydaPositive = hasFoyda && row.foyda_per_unit! > 0;
-                  const foydaNegative = hasFoyda && row.foyda_per_unit! < 0;
+                  const sofPos = (row.total_sof_foyda ?? 0) >= 0;
 
                   return (
                     <TableRow key={row.product_id}>
@@ -184,25 +248,26 @@ export function ProfitReportPage() {
                           ? `${row.cost_price.toLocaleString('uz-UZ', { maximumFractionDigits: 0 })} so'm`
                           : <span className="text-muted-foreground">—</span>}
                       </TableCell>
+                      <TableCell className="text-right tabular-nums text-violet-600 dark:text-violet-400">
+                        {row.production_cost != null
+                          ? `${row.production_cost.toLocaleString('uz-UZ', { maximumFractionDigits: 0 })} so'm`
+                          : <span className="text-muted-foreground">—</span>}
+                      </TableCell>
                       <TableCell className="text-right tabular-nums text-emerald-600 dark:text-emerald-400">
                         {row.sell_price != null
                           ? `${row.sell_price.toLocaleString('uz-UZ', { maximumFractionDigits: 0 })} so'm`
                           : <span className="text-muted-foreground">—</span>}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">
-                        {hasFoyda ? (
-                          <span className={`inline-flex items-center gap-1 font-medium ${foydaPositive ? 'text-emerald-600 dark:text-emerald-400' : foydaNegative ? 'text-rose-600 dark:text-rose-400' : 'text-muted-foreground'}`}>
-                            {foydaPositive ? <TrendingUp className="size-3" /> : foydaNegative ? <TrendingDown className="size-3" /> : <Minus className="size-3" />}
-                            {row.foyda_per_unit!.toLocaleString('uz-UZ', { maximumFractionDigits: 0 })} so'm
-                          </span>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
+                        <FoydaCell value={row.foyda_per_unit} />
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        <FoydaCell value={row.sof_foyda_per_unit} />
                       </TableCell>
                       <TableCell className="text-right tabular-nums font-semibold">
-                        {row.total_foyda != null ? (
-                          <span className={row.total_foyda >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}>
-                            {formatSom(row.total_foyda)}
+                        {row.total_sof_foyda != null ? (
+                          <span className={sofPos ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}>
+                            {formatSom(row.total_sof_foyda)}
                           </span>
                         ) : (
                           <span className="text-muted-foreground">—</span>
@@ -215,10 +280,38 @@ export function ProfitReportPage() {
             </Table>
           </div>
         )}
+        {!isLoading && !error && items.length > PAGE_SIZE && (
+          <div className="flex items-center justify-between border-t border-border/40 px-4 py-2">
+            <span className="text-xs text-muted-foreground">
+              Jami {items.length} ta mahsulot — {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, items.length)} ko&apos;rsatilmoqda
+            </span>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={page === 0}
+                className="rounded p-1 text-muted-foreground hover:bg-muted disabled:opacity-30"
+              >
+                <ChevronLeft className="size-4" />
+              </button>
+              <span className="min-w-[3rem] text-center text-xs font-medium tabular-nums">
+                {page + 1} / {totalPages}
+              </span>
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                disabled={page === totalPages - 1}
+                className="rounded p-1 text-muted-foreground hover:bg-muted disabled:opacity-30"
+              >
+                <ChevronRight className="size-4" />
+              </button>
+            </div>
+          </div>
+        )}
       </Card>
 
       <p className="text-xs text-muted-foreground">
-        * Tan narxi — Posterdan olingan xarid narxi (cost_price). Aniqroq hisob uchun mahsulot retseptiga narxlar kiritilsin.
+        * Xarid narxi — Posterdan olingan (cost_price). Ish. narxi — mahsulot kartasidagi ishlab chiqarish xarajati (production_cost). Sof foyda = Sotuv − Ish. narxi.
       </p>
     </div>
   );

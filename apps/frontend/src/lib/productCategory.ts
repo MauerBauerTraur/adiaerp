@@ -91,14 +91,20 @@ export function hasReadyPrefix(name: string): boolean {
   return /^\s*г\s*[\\/]?\s*п(?=\s|$|[\\/.:,-])/i.test(name.trim());
 }
 
-/** The effective product type, upgrading `Г/П`-prefixed names to finished. */
+/**
+ * The effective product type. Explicit type='gp' always wins; otherwise
+ * a Г/П-prefixed name is upgraded to 'finished' for backward compatibility
+ * with products saved before the 'gp' enum value existed.
+ */
 export function effectiveType(product: Product): ProductType {
+  if (product.type === 'gp') return 'gp';
   if (hasReadyPrefix(product.name)) return 'finished';
   return product.type;
 }
 
 /** Derive the fine-grained category for a product (EPIC 1.3 / 1.4). */
 export function deriveCategory(product: Product): ProductCategory {
+  if (product.type === 'gp') return 'finished';
   const name = product.name.toLowerCase();
   for (const [needles, category] of NAME_RULES) {
     if (needles.some((n) => name.includes(n))) return category;

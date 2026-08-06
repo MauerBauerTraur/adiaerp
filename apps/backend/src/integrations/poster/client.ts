@@ -76,6 +76,25 @@ export type PosterWorkshop = {
   ingredients_storage_id?: string | number;
 };
 
+/** One size/variant entry inside a type=2 product's dish modification group. */
+export type PosterDishModification = {
+  /** Poster's dish-level modification ID. NOTE: this ID does NOT match the
+   *  `modification_id` that appears in sales transactions for type=2 products —
+   *  the two values come from different Poster ID systems. */
+  dish_modification_id: string | number;
+  name?: string;
+  /** Gross weight per sold unit in grams. */
+  brutto?: string | number;
+  price?: string | number;
+  ingredient_id?: string | number;
+};
+
+export type PosterDishModificationGroup = {
+  group_id: string | number;
+  name?: string;
+  modifications?: PosterDishModification[];
+};
+
 export type PosterMenuProductRow = {
   product_id: string;
   product_name: string;
@@ -88,6 +107,8 @@ export type PosterMenuProductRow = {
   cost?: string;
   /** Workshop (цех) this product is prepared in. */
   workshop?: string | number;
+  /** Present for type=2 products that have size/variant groups (e.g. ЦЕЛЫЙ/ПОЛОВИНА/КУСОК). */
+  group_modifications?: PosterDishModificationGroup[];
 };
 
 export type PosterRecipeIngredient = {
@@ -103,10 +124,20 @@ export type PosterRecipeIngredient = {
   ingredient_unit: string;
 };
 
+export type PosterModification = {
+  modificator_id: string | number;
+  modificator_name?: string;
+  /** Gross weight per sold unit in grams (Poster field: product_weight). */
+  product_weight?: string | number;
+  unit?: string;
+};
+
 export type PosterMenuProductFull = PosterMenuProductRow & {
   ingredients?: PosterRecipeIngredient[];
   /** Per-spot selling prices: { "1": "630000", "2": "630000", ... } */
   price?: Record<string, string> | null;
+  /** Present for type=3 (modification-based) products. */
+  modifications?: PosterModification[];
 };
 
 export type PosterPrepack = {

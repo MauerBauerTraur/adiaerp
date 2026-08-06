@@ -67,10 +67,9 @@ export async function consumeBomAndProduce(
 ): Promise<{ inputMovementIds: number[]; outputMovementId: number }> {
   const orderQty = Number(order.qty);
 
-  // Output always lands at the production location first. For final orders the
-  // central_warehouse_manager receives the output dispatch (Qabul qilindi)
-  // which applies the production→warehouse transfer and updates central stock.
-  const outputLocationId = order.location_id;
+  // Output goes directly to the target warehouse (maqsad ombor) when set.
+  // If no target is specified, falls back to the production location.
+  const outputLocationId = order.target_location_id ?? order.location_id;
 
   // BOM lines for the produced product.
   //
@@ -86,16 +85,8 @@ export async function consumeBomAndProduce(
     order.stage_role === 'zagatovka'
       ? await readBaseBom(tx, order.product_id)
       : await readFinalBom(tx, order.product_id);
-  if (bom.length === 0) {
-    throw AppError.validation(
-      `Product ${order.product_id} has no recipe (BOM) for stage_role=` +
-        `${order.stage_role}; cannot run the production flow.`,
-    );
-  }
 
-  // Consume every component out of the production location. allowNegative
-  // lets stock go below zero so the order is never blocked by a short
-  // component — the deficit shows in stock reports and is corrected later.
+  // If no BOM is configured, skip ingredient consumption and only produce output.
   const inputMovementIds: number[] = [];
   for (const line of bom) {
     const needed = Number(line.qty_per_unit) * orderQty;

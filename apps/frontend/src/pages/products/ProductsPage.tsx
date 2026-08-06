@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { BarChart2, Loader2, Package, Pencil, Plus, ScrollText, Search, Settings2, Trash2, TrendingDown, TrendingUp, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, BarChart2, Loader2, Package, Pencil, Plus, ScrollText, Search, Settings2, Trash2, TrendingDown, TrendingUp, X } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -12,11 +12,7 @@ import {
   DialogFooter,
   DialogTitle,
 } from '@/components/ui/dialog';
-import {
-  FilterPopover,
-  type FilterGroup,
-  type FilterValue,
-} from '@/components/ui/filter-popover';
+import { FilterSheet, FilterField, FilterTrigger } from '@/components/ui/filter-sheet';
 import {
   Table,
   TableBody,
@@ -53,16 +49,6 @@ import { ProductFormDialog } from './ProductFormDialog';
 import { RecipeDialog } from './RecipeDialog';
 import { ProductDetailSheet, type Tab as DetailTab } from './ProductDetailSheet';
 
-/** O'lchov birligi filter — unit tab UI uchun */
-const UNIT_FILTER_GROUPS: FilterGroup[] = [
-  {
-    key: 'unit',
-    label: "O'lchov birligi",
-    searchable: false,
-    options: UNIT_OPTIONS.map((u) => ({ value: u.value, label: u.label })),
-  },
-];
-
 /** Lazy render batch */
 const PAGE_SIZE = 32;
 
@@ -71,6 +57,7 @@ type TypeTab = '' | ProductType;
 
 const TYPE_TABS: { key: TypeTab; label: string; color: string }[] = [
   { key: '', label: 'Hammasi', color: '' },
+  { key: 'gp', label: 'Готовая продукция', color: 'sky' },
   { key: 'finished', label: 'Tayyor mahsulot', color: 'emerald' },
   { key: 'semi', label: 'Yarim tayyor', color: 'violet' },
   { key: 'raw', label: 'Xom-ashyo', color: 'slate' },
@@ -97,13 +84,51 @@ export function ProductsPage() {
   // Type tab
   const [selectedType, setSelectedType] = useState<TypeTab>('');
   // Unit-only filter (kept separate from type)
-  const [unitFilter, setUnitFilter] = useState<FilterValue>({ unit: [] });
+  const [unitFilter, setUnitFilter] = useState<string[]>([]);
   const [search, setSearch] = useState('');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   // Below-min filter
   const [belowMinOnly, setBelowMinOnly] = useState(false);
   const [belowMinIds, setBelowMinIds] = useState<Set<number>>(new Set());
   const [belowMinLoading, setBelowMinLoading] = useState(false);
+
+  // Filter sheet
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [draftUnitFilter, setDraftUnitFilter] = useState<string[]>([]);
+  const [draftBelowMinOnly, setDraftBelowMinOnly] = useState(false);
+
+  const filterActiveCount = (unitFilter.length > 0 ? 1 : 0) + (belowMinOnly ? 1 : 0);
+
+  function openFilter() {
+    setDraftUnitFilter([...unitFilter]);
+    setDraftBelowMinOnly(belowMinOnly);
+    setFilterOpen(true);
+  }
+  function applyFilter() {
+    setUnitFilter(draftUnitFilter);
+    setBelowMinOnly(draftBelowMinOnly);
+    setFilterOpen(false);
+  }
+  function clearFilter() {
+    setDraftUnitFilter([]); setUnitFilter([]);
+    setDraftBelowMinOnly(false); setBelowMinOnly(false);
+    setFilterOpen(false);
+  }
+
+  function toggleDraftUnit(unit: string) {
+    setDraftUnitFilter((prev) =>
+      prev.includes(unit) ? prev.filter((u) => u !== unit) : [...prev, unit],
+    );
+  }
+
+  // Table sort
+  type SortKey = 'name' | 'category' | 'type' | 'unit' | 'total_qty' | 'cost_price' | 'sell_price' | 'markup';
+  const [sortKey, setSortKey] = useState<SortKey | ''>('');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    else { setSortKey(key); setSortDir('asc'); }
+  }
 
   // Dialogs
   const [createOpen, setCreateOpen]     = useState(false);
@@ -182,7 +207,7 @@ export function ProductsPage() {
 
   // Per-tab counts (from full list, not filtered)
   const typeCounts = useMemo<Record<TypeTab, number>>(() => {
-    const c: Record<TypeTab, number> = { '': 0, raw: 0, semi: 0, finished: 0 };
+    const c: Record<TypeTab, number> = { '': 0, raw: 0, semi: 0, finished: 0, gp: 0 };
     for (const p of allProducts) {
       c['']++;
       c[effectiveType(p)]++;
@@ -190,17 +215,39 @@ export function ProductsPage() {
     return c;
   }, [allProducts]);
 
-  const selectedUnits = unitFilter.unit ?? [];
-
   const filtered = useMemo(() => {
     return allProducts.filter((p) => {
       if (selectedType !== '' && effectiveType(p) !== selectedType) return false;
-      if (selectedUnits.length > 0 && !selectedUnits.includes(p.unit as Unit)) return false;
+      if (unitFilter.length > 0 && !unitFilter.includes(p.unit as Unit)) return false;
       if (!matchesSearch(`${p.name} ${p.sku ?? ''}`, search)) return false;
       if (belowMinOnly && !belowMinIds.has(p.id)) return false;
       return true;
     });
-  }, [allProducts, selectedType, selectedUnits, search, belowMinOnly, belowMinIds]);
+  }, [allProducts, selectedType, unitFilter, search, belowMinOnly, belowMinIds]);
+
+  const sortedForTable = useMemo(() => {
+    if (!sortKey) return filtered;
+    return [...filtered].sort((a, b) => {
+      let av: string | number = 0;
+      let bv: string | number = 0;
+      switch (sortKey) {
+        case 'name':      av = a.name.toLowerCase(); bv = b.name.toLowerCase(); break;
+        case 'category':  av = deriveCategory(a);    bv = deriveCategory(b);    break;
+        case 'type':      av = effectiveType(a);     bv = effectiveType(b);     break;
+        case 'unit':      av = a.unit;               bv = b.unit;               break;
+        case 'total_qty': av = a.total_qty ?? 0;     bv = b.total_qty ?? 0;     break;
+        case 'cost_price':  av = a.cost_price  ?? 0; bv = b.cost_price  ?? 0;  break;
+        case 'sell_price':  av = a.sell_price  ?? 0; bv = b.sell_price  ?? 0;  break;
+        case 'markup': {
+          const ma = a.cost_price && a.sell_price ? (a.sell_price - a.cost_price) / a.cost_price : -Infinity;
+          const mb = b.cost_price && b.sell_price ? (b.sell_price - b.cost_price) / b.cost_price : -Infinity;
+          av = ma; bv = mb; break;
+        }
+      }
+      const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+  }, [filtered, sortKey, sortDir]);
 
   // Group products by category when viewing "Tayyor mahsulot"
   const grouped = useMemo<{ cat: ProductCategory | null; items: Product[] }[]>(() => {
@@ -610,36 +657,74 @@ export function ProductsPage() {
               </button>
             )}
           </div>
-          <FilterPopover
-            groups={UNIT_FILTER_GROUPS}
-            value={unitFilter}
-            onApply={setUnitFilter}
-          />
-          <button
-            type="button"
-            onClick={() => setBelowMinOnly((v) => !v)}
-            className={cn(
-              'flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-medium transition-all',
-              belowMinOnly
-                ? 'border-destructive bg-destructive text-destructive-foreground'
-                : 'border-border bg-card text-muted-foreground hover:border-destructive/50 hover:text-destructive',
-            )}
-          >
-            {belowMinLoading
-              ? <Loader2 className="size-3.5 animate-spin" />
-              : <TrendingDown className="size-3.5" />}
-            Minimumdan past
-            {belowMinOnly && belowMinIds.size > 0 && (
-              <span className="rounded-full bg-white/20 px-1.5 py-0.5 text-[11px] leading-none font-semibold tabular-nums">
-                {belowMinIds.size}
-              </span>
-            )}
-          </button>
+          <FilterTrigger onClick={openFilter} activeCount={filterActiveCount} />
           <p className="hidden text-sm text-muted-foreground sm:block">
             {filtered.length} ta
           </p>
         </div>
       </div>
+
+      <FilterSheet
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilter}
+        onClear={clearFilter}
+        activeCount={filterActiveCount}
+      >
+        <FilterField label="O'lchov birligi">
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              type="button"
+              onClick={() => setDraftUnitFilter([])}
+              className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                draftUnitFilter.length === 0
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground'
+              }`}
+            >
+              Barchasi
+            </button>
+            {UNIT_OPTIONS.map((u) => (
+              <button
+                key={u.value}
+                type="button"
+                onClick={() => toggleDraftUnit(u.value)}
+                className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                  draftUnitFilter.includes(u.value)
+                    ? 'bg-primary text-primary-foreground'
+                    : 'bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground'
+                }`}
+              >
+                {u.label}
+              </button>
+            ))}
+          </div>
+        </FilterField>
+
+        <FilterField label="Zaxira holati">
+          <button
+            type="button"
+            onClick={() => setDraftBelowMinOnly((v) => !v)}
+            className={`w-full flex items-center justify-between rounded-lg border px-3 py-2.5 text-sm font-medium transition-colors ${
+              draftBelowMinOnly
+                ? 'border-destructive bg-destructive/10 text-destructive'
+                : 'border-border bg-background text-muted-foreground hover:bg-muted'
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              {belowMinLoading ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <TrendingDown className="size-4" />
+              )}
+              Minimumdan past
+            </span>
+            <span className={`size-4 rounded-sm border-2 flex items-center justify-center ${draftBelowMinOnly ? 'border-destructive bg-destructive' : 'border-muted-foreground'}`}>
+              {draftBelowMinOnly && <span className="text-white text-[10px] font-bold leading-none">✓</span>}
+            </span>
+          </button>
+        </FilterField>
+      </FilterSheet>
 
       {/* ── Content ── */}
       <Card
@@ -737,19 +822,39 @@ export function ProductsPage() {
                     />
                   </TableHead>
                 )}
-                <TableHead>Nomi</TableHead>
-                <TableHead>Turkum</TableHead>
-                <TableHead>Turi</TableHead>
-                <TableHead>Birlik</TableHead>
-                <TableHead className="text-right">Qoldiq</TableHead>
-                <TableHead className="text-right">Tan narxi</TableHead>
-                <TableHead className="text-right">Sotuv narxi</TableHead>
-                <TableHead className="text-right">Ustama</TableHead>
+                {(['name','category','type','unit'] as const).map((col) => {
+                  const labels: Record<string, string> = { name: 'Nomi', category: 'Turkum', type: 'Turi', unit: 'Birlik' };
+                  const active = sortKey === col;
+                  return (
+                    <TableHead key={col}>
+                      <button type="button" onClick={() => toggleSort(col)}
+                        className={cn('flex items-center gap-1 transition-colors hover:text-foreground', active ? 'text-foreground font-semibold' : 'text-muted-foreground')}
+                      >
+                        {labels[col]}
+                        {active && sortDir === 'asc' ? <ArrowUp className="size-3" /> : active && sortDir === 'desc' ? <ArrowDown className="size-3" /> : <ArrowUpDown className="size-3 opacity-40" />}
+                      </button>
+                    </TableHead>
+                  );
+                })}
+                {(['total_qty','cost_price','sell_price','markup'] as const).map((col) => {
+                  const labels: Record<string, string> = { total_qty: 'Qoldiq', cost_price: 'Tan narxi', sell_price: 'Sotuv narxi', markup: 'Ustama' };
+                  const active = sortKey === col;
+                  return (
+                    <TableHead key={col} className="text-right">
+                      <button type="button" onClick={() => toggleSort(col)}
+                        className={cn('flex items-center gap-1 transition-colors hover:text-foreground ml-auto', active ? 'text-foreground font-semibold' : 'text-muted-foreground')}
+                      >
+                        {labels[col]}
+                        {active && sortDir === 'asc' ? <ArrowUp className="size-3" /> : active && sortDir === 'desc' ? <ArrowDown className="size-3" /> : <ArrowUpDown className="size-3 opacity-40" />}
+                      </button>
+                    </TableHead>
+                  );
+                })}
                 <TableHead className="text-right">Amallar</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {(flatVisible ?? filtered).map((p) => {
+              {sortedForTable.slice(0, visibleCount).map((p) => {
                 const category = deriveCategory(p);
                 const isNonRaw = effectiveType(p) !== 'raw';
                 const natsenka =
@@ -916,6 +1021,7 @@ export function ProductsPage() {
         onProductClick={(p, tab) => openDetail(p, tab)}
         canEditRecipe={canEditRecipe}
         defaultTab={detailInitTab}
+        onSaved={refetch}
       />
       {/* ── Bulk edit dialog ── */}
       {canEdit && (

@@ -61,6 +61,7 @@ export const PRODUCT_TYPE_LABELS: Record<ProductType, string> = {
   raw: 'Xom-ashyo',
   semi: 'Yarim tayyor',
   finished: 'Tayyor mahsulot',
+  gp: 'Готовая продукция',
 };
 
 export const UNIT_LABELS: Record<Unit, string> = {
@@ -231,9 +232,9 @@ export const REPLENISHMENT_STATUS_OPTIONS: {
 
 /** Uzbek labels for production order statuses. */
 export const PRODUCTION_ORDER_STATUS_LABELS: Record<ProductionOrderStatus, string> = {
-  new: 'Boshlash',
-  in_progress: 'Topshirildi',
-  done: 'Qabul qildi',
+  new: 'Yaratildi',
+  in_progress: 'Jarayonda',
+  done: 'Tayyor',
   cancelled: 'Bekor qilingan',
 };
 

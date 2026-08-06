@@ -43,7 +43,7 @@ import {
 
 export const productsRouter: Router = Router();
 
-const PRODUCT_TYPES = ['raw', 'semi', 'finished'] as const;
+const PRODUCT_TYPES = ['raw', 'semi', 'finished', 'gp'] as const;
 const UNIT_TYPES = ['kg', 'l', 'pcs'] as const;
 
 type ProductRow = {
@@ -57,6 +57,7 @@ type ProductRow = {
   is_active: boolean;
   cost_price: number | null;
   sell_price: number | null;
+  production_cost: number | null;
   batch_yield: number | null;
   production_location_id: number | null;
   storage_location_id: number | null;
@@ -105,13 +106,13 @@ type RecipeRow = {
 
 /** Plain column list — used in RETURNING and simple WHERE-by-id queries. */
 const PRODUCT_COLUMNS = `id, name, type, unit, sku, poster_ingredient_id,
-  poster_product_id, is_active, cost_price, sell_price, batch_yield,
+  poster_product_id, is_active, cost_price, sell_price, production_cost, batch_yield,
   production_location_id, storage_location_id, min_qty, max_qty, recipe_locked, created_at, updated_at`;
 
 /** Full SELECT with LEFT JOIN for total_qty — used in list endpoints. */
 const PRODUCT_LIST_SQL = (where?: string) =>
   `SELECT p.id, p.name, p.type, p.unit, p.sku, p.poster_ingredient_id,
-          p.poster_product_id, p.is_active, p.cost_price, p.sell_price, p.batch_yield,
+          p.poster_product_id, p.is_active, p.cost_price, p.sell_price, p.production_cost, p.batch_yield,
           p.production_location_id, p.storage_location_id, p.min_qty, p.max_qty,
           p.recipe_locked, COALESCE(s.total_qty, 0) AS total_qty, p.created_at, p.updated_at
    FROM products p
@@ -158,6 +159,31 @@ productsRouter.get(
     // List endpoints return a bare array (spec section 4) — no envelope.
     // Each row carries the EPIC 1.3 smart-category fields.
     res.status(200).json(filtered.map(enrich));
+  }),
+);
+
+// GET /api/products/:id — single product by ID.
+productsRouter.get(
+  '/:id',
+  authenticate,
+  authorize(
+    'pm',
+    'raw_warehouse_manager',
+    'production_manager',
+    'supply_manager',
+    'central_warehouse_manager',
+    'store_manager',
+  ),
+  asyncHandler(async (req, res) => {
+    const productId = parseIdParam(req.params.id, 'id');
+    const { rows } = await query<ProductRow>(
+      PRODUCT_LIST_SQL('WHERE p.id = $1'),
+      [productId],
+    );
+    if (rows.length === 0) {
+      throw AppError.notFound(`Product ${productId} not found.`);
+    }
+    res.status(200).json({ product: enrich(rows[0]!) });
   }),
 );
 
@@ -338,6 +364,10 @@ productsRouter.patch(
       'sell_price' in body
         ? (body.sell_price === null ? null : requireNonNegativeNumber(body, 'sell_price'))
         : prev.sell_price;
+    const productionCost =
+      'production_cost' in body
+        ? (body.production_cost === null ? null : requireNonNegativeNumber(body, 'production_cost'))
+        : prev.production_cost;
 
     if (sku !== null && sku !== prev.sku) {
       const dup = await query<{ id: number }>(
@@ -352,11 +382,13 @@ productsRouter.patch(
     const { rows } = await query<ProductRow>(
       `UPDATE products SET name = $1, type = $2, unit = $3, sku = $4,
               production_location_id = $5, storage_location_id = $6,
-              min_qty = $7, max_qty = $8, recipe_locked = $9, sell_price = $10
-       WHERE id = $11
+              min_qty = $7, max_qty = $8, recipe_locked = $9, sell_price = $10,
+              production_cost = $11
+       WHERE id = $12
        RETURNING ${PRODUCT_COLUMNS}`,
       [name, type, unit, sku, productionLocationId ?? null,
-       storageLocationId ?? null, minQty, maxQty, recipeLocked, sellPrice ?? null, productId],
+       storageLocationId ?? null, minQty, maxQty, recipeLocked, sellPrice ?? null,
+       productionCost ?? null, productId],
     );
     await writeAudit(poolRunner, {
       actorUserId: principal.userId,

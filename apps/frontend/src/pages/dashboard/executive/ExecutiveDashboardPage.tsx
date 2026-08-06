@@ -168,13 +168,14 @@ export function ExecutiveDashboardPage() {
   }
 
   const isProdManager = user?.role === 'production_manager';
+  const isPm = user?.role === 'pm' || user?.role === 'super_admin';
   const prodNode = ecosystem.data?.chain_summary.find((n) => n.type === 'production');
   const prodPulse = prodNode?.pulse.kind === 'production' ? prodNode.pulse : null;
   const overdueCount = prodPulse?.overdue_orders ?? 0;
 
   return (
     <div className="space-y-4 sm:space-y-6">
-      {isProdManager && overdueCount > 0 && (
+      {(isProdManager || isPm) && overdueCount > 0 && (
         <div className="flex items-center gap-2 rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-2.5 text-sm font-medium text-rose-700 dark:text-rose-400">
           <AlertTriangle className="size-4 shrink-0" aria-hidden="true" />
           <span>{overdueCount} ta buyurtmaning muddati o'tgan</span>

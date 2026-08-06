@@ -159,6 +159,7 @@ def pm2_ecosystem() -> str:
     name: 'adia-backend',
     script: '{APP_DIR}/apps/backend/dist/server.js',
     cwd: '{APP_DIR}/apps/backend',
+    exec_mode: 'fork',
     instances: 1,
     restart_delay: 3000,
     max_restarts: 10,

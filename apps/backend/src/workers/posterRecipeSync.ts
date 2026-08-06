@@ -11,6 +11,7 @@ import cron from 'node-cron';
 import { loadConfig } from '../config/index.js';
 import { createPosterClientFromConfig } from '../integrations/poster/client.js';
 import { syncIngredients, syncPrepacks, syncMenuProducts } from '../integrations/poster/seedSync.js';
+import { syncModifications } from '../integrations/poster/modificationSync.js';
 
 export const POSTER_RECIPE_SYNC_SCHEDULE = '0 * * * *'; // every hour at :00
 
@@ -51,6 +52,14 @@ export async function runRecipeSyncCycle(): Promise<void> {
     const applied = (ingr.recordsApplied ?? 0) + (prepacks.recordsApplied ?? 0) + (menu.recordsApplied ?? 0);
     if (applied > 0) {
       console.log(`[poster-recipe-sync] updated=${applied}`);
+    }
+    // Sync modification weights (weight-based product variants like КУСОК/ЦЕЛЫЙ).
+    // Runs sequentially after recipe sync to avoid Poster rate-limit contention.
+    const mods = await syncModifications(client);
+    if (mods.modificationsUpserted > 0) {
+      console.log(
+        `[poster-recipe-sync] modifications synced: products=${mods.productsScanned} mods=${mods.modificationsUpserted}`,
+      );
     }
   } catch (err) {
     console.error('[poster-recipe-sync] cycle failed:', (err as Error).message);

@@ -12,6 +12,7 @@ import {
 } from '@/lib/labels';
 import { apiRequest } from '@/lib/api-client';
 import { useToast } from '@/components/ui/toast';
+import { useAuth } from '@/hooks/useAuth';
 import type { DashboardPosterStatus } from '@/lib/types';
 import { cn } from '@/lib/utils';
 
@@ -34,6 +35,8 @@ export function PosterStatusCard({
 }) {
   const hasErrors = status !== null && status.sync_errors_24h > 0;
   const { notify } = useToast();
+  const { user } = useAuth();
+  const canViewWarnings = user?.role === 'pm' || user?.role === 'super_admin';
   const [syncing, setSyncing] = useState(false);
 
   async function handleSync() {
@@ -76,13 +79,15 @@ export function PosterStatusCard({
             )}
             {syncing ? 'Yuklanmoqda...' : 'Yangilash'}
           </Button>
-          <Link
-            to="/admin/import-warnings"
-            className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
-          >
-            Xatoliklar
-            <ArrowRight className="size-3" aria-hidden="true" />
-          </Link>
+          {canViewWarnings && (
+            <Link
+              to="/admin/import-warnings"
+              className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+            >
+              Xatoliklar
+              <ArrowRight className="size-3" aria-hidden="true" />
+            </Link>
+          )}
         </div>
       </header>
 

@@ -1,13 +1,15 @@
 /**
  * F4.6 — Sales read endpoint.
  *
- *   GET /api/sales?location_id=&from=&to=&limit=&offset=
+ *   GET /api/sales?location_id=&product_id=&from=&to=&limit=&offset=
  *
  * One read-only window onto the Poster-synced `sales` table for the store
- * pages. PM / ai_assistant may query any store; a scoped principal is
- * locked to its assigned `locationIds` (M:N). Date filters accept ISO
- * timestamps (or YYYY-MM-DD); `from` defaults to start of today, `to`
- * defaults to "open-ended".
+ * pages and product detail Sotuvlar tab. PM / ai_assistant may query any
+ * store; a scoped principal is locked to its assigned `locationIds` (M:N).
+ * Date filters accept ISO timestamps (or YYYY-MM-DD); `from` defaults to
+ * start of today, `to` defaults to "open-ended".
+ * When `product_id` is supplied the result is narrowed to that product
+ * across all stores (still RBAC-scoped).
  *
  * The endpoint is paginated to keep the page bounded — same `{items,total,
  * limit,offset}` envelope as `GET /api/stock/movements` (spec section 4).
@@ -36,6 +38,7 @@ type SalesRow = {
   product_unit: string;
   qty: string;
   price: string;
+  cost_price: string | null;
   sold_at: Date;
   poster_transaction_id: string;
 };
@@ -49,6 +52,7 @@ type SalesItem = {
   product_unit: string;
   qty: number;
   price: number;
+  cost_price: number | null;
   sold_at: string;
   poster_transaction_id: number;
 };
@@ -61,6 +65,7 @@ salesRouter.get(
     'store_manager',
     'central_warehouse_manager',
     'supply_manager',
+    'production_manager',
     'ai_assistant',
   ),
   asyncHandler(async (req, res) => {
@@ -69,6 +74,16 @@ salesRouter.get(
       typeof req.query.location_id === 'string' ? req.query.location_id : undefined,
       'location_id',
     );
+    const productIdParam = parseOptionalIdParam(
+      typeof req.query.product_id === 'string' ? req.query.product_id : undefined,
+      'product_id',
+    );
+    const VALID_PRODUCT_TYPES = ['raw', 'semi', 'finished', 'gp'] as const;
+    const productTypeRaw = typeof req.query.product_type === 'string' ? req.query.product_type : undefined;
+    if (productTypeRaw !== undefined && !(VALID_PRODUCT_TYPES as readonly string[]).includes(productTypeRaw)) {
+      throw AppError.validation(`"product_type" must be one of: ${VALID_PRODUCT_TYPES.join(', ')}.`);
+    }
+    const productTypeParam = productTypeRaw as (typeof VALID_PRODUCT_TYPES)[number] | undefined;
     const fromParam = parseOptionalDate(
       typeof req.query.from === 'string' ? req.query.from : undefined,
       'from',
@@ -111,6 +126,14 @@ salesRouter.get(
       params.push(storeFilter);
       conditions.push(`s.store_id = ANY($${params.length}::bigint[])`);
     }
+    if (productIdParam !== undefined) {
+      params.push(productIdParam);
+      conditions.push(`s.product_id = $${params.length}`);
+    }
+    if (productTypeParam !== undefined) {
+      params.push(productTypeParam);
+      conditions.push(`p.type = $${params.length}`);
+    }
     if (fromParam !== undefined) {
       params.push(fromParam);
       conditions.push(`s.sold_at >= $${params.length}`);
@@ -122,7 +145,9 @@ salesRouter.get(
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const countRes = await query<{ total: string }>(
-      `SELECT count(*) AS total FROM sales s ${where}`,
+      `SELECT count(*) AS total FROM sales s
+         JOIN products p ON p.id = s.product_id
+         ${where}`,
       params,
     );
     const total = Number(countRes.rows[0]?.total ?? 0);
@@ -133,7 +158,7 @@ salesRouter.get(
     const { rows } = await query<SalesRow>(
       `SELECT s.id, s.store_id, l.name AS store_name,
               s.product_id, p.name AS product_name, p.unit AS product_unit,
-              s.qty, s.price, s.sold_at, s.poster_transaction_id
+              s.qty, s.price, p.cost_price, s.sold_at, s.poster_transaction_id
          FROM sales s
          JOIN products  p ON p.id = s.product_id
          JOIN locations l ON l.id = s.store_id
@@ -152,6 +177,7 @@ salesRouter.get(
       product_unit: r.product_unit,
       qty: Number(r.qty),
       price: Number(r.price),
+      cost_price: r.cost_price != null ? Number(r.cost_price) : null,
       sold_at: r.sold_at.toISOString(),
       poster_transaction_id: Number(r.poster_transaction_id),
     }));
@@ -170,6 +196,12 @@ function parseOptionalDate(raw: string | undefined, label: string): Date | undef
   const d = new Date(raw);
   if (Number.isNaN(d.getTime())) {
     throw AppError.validation(`"${label}" must be an ISO timestamp or YYYY-MM-DD.`);
+  }
+  // Date-only strings (YYYY-MM-DD) are parsed as UTC midnight.
+  // When used as an upper bound ("to"), treat it as end-of-day so the
+  // full calendar day's data is included.
+  if (label === 'to' && /^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    d.setUTCHours(23, 59, 59, 999);
   }
   return d;
 }

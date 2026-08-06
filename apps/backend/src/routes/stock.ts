@@ -383,11 +383,12 @@ type MovementRow = {
   to_location_name: string | null;
 };
 
-// GET /api/stock/movements?location_id=&product_id=&limit=&offset=
+// GET /api/stock/movements?location_id=&product_id=&reason=&limit=&offset=
 stockRouter.get(
   '/movements',
   authenticate,
   authorize(
+    'super_admin',
     'pm',
     'raw_warehouse_manager',
     'production_manager',
@@ -438,6 +439,11 @@ stockRouter.get(
       filterParams.push(productIdParam);
       conditions.push(`m.product_id = $${filterParams.length}`);
     }
+    const reasonParam = typeof req.query.reason === 'string' && req.query.reason !== '' ? req.query.reason : undefined;
+    if (reasonParam !== undefined) {
+      filterParams.push(reasonParam);
+      conditions.push(`m.reason = $${filterParams.length}`);
+    }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
     // `total` is the filtered row count (spec section 4) — drives pagination.
@@ -467,6 +473,297 @@ stockRouter.get(
     );
     // Paginated endpoint — the one list that keeps an envelope (spec section 4).
     res.status(200).json({ items: rows, total, limit, offset });
+  }),
+);
+
+// GET /api/stock/report?location_id=&period=kun|hafta|oy|yil
+// Returns per-product opening/in/used/sold/closing quantities for the period.
+// RBAC: scoped managers see only their own location; PM/super_admin see all.
+stockRouter.get(
+  '/report',
+  authenticate,
+  authorize(
+    'super_admin',
+    'pm',
+    'raw_warehouse_manager',
+    'production_manager',
+    'supply_manager',
+    'central_warehouse_manager',
+    'store_manager',
+    'ai_assistant',
+  ),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+
+    let locationId: number | null = null;
+    if (typeof req.query.location_id === 'string' && req.query.location_id !== '') {
+      const parsed = Number(req.query.location_id);
+      if (!Number.isInteger(parsed) || parsed <= 0) throw AppError.validation('Invalid location_id');
+      locationId = parsed;
+    }
+
+    // RBAC: scoped managers are forced to their own location.
+    if (!isSuperAdmin(principal) && principal.role !== 'ai_assistant') {
+      if (principal.locationId !== null) {
+        if (locationId === null) {
+          locationId = principal.locationId;
+        } else if (locationId !== principal.locationId) {
+          throw AppError.forbidden('You may only view your own location.');
+        }
+      }
+    }
+
+    const period = typeof req.query.period === 'string' ? req.query.period : 'oy';
+    const now = new Date();
+    let fromDate: Date;
+    switch (period) {
+      case 'kun':
+        fromDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        break;
+      case 'hafta': {
+        const dow = now.getDay() === 0 ? 6 : now.getDay() - 1;
+        const mon = new Date(now);
+        mon.setDate(now.getDate() - dow);
+        fromDate = new Date(mon.getFullYear(), mon.getMonth(), mon.getDate());
+        break;
+      }
+      case 'yil':
+        fromDate = new Date(now.getFullYear(), 0, 1);
+        break;
+      default: // 'oy'
+        fromDate = new Date(now.getFullYear(), now.getMonth(), 1);
+    }
+
+    type ReportRow = {
+      product_id: number;
+      product_name: string;
+      product_unit: string;
+      product_type: string;
+      opening_qty: string;
+      in_qty: string;
+      used_qty: string;
+      sold_qty: string;
+      closing_qty: string;
+      in_production_qty: string;
+    };
+
+    const { rows } = await query<ReportRow>(
+      `WITH mvmt AS (
+         SELECT
+           product_id,
+           SUM(
+             CASE
+               WHEN $1::bigint IS NULL AND reason IN ('production_output','purchase') THEN qty
+               WHEN $1::bigint IS NOT NULL AND to_location_id = $1::bigint
+                    AND reason IN ('production_output','purchase','transfer') THEN qty
+               ELSE 0
+             END
+           ) AS in_qty,
+           SUM(
+             CASE
+               WHEN $1::bigint IS NULL AND reason = 'production_input' THEN qty
+               WHEN $1::bigint IS NOT NULL AND from_location_id = $1::bigint
+                    AND reason = 'production_input' THEN qty
+               ELSE 0
+             END
+           ) AS used_qty,
+           SUM(
+             CASE
+               WHEN $1::bigint IS NULL AND reason = 'sale' THEN qty
+               WHEN $1::bigint IS NOT NULL AND from_location_id = $1::bigint
+                    AND reason = 'sale' THEN qty
+               ELSE 0
+             END
+           ) AS movement_sold_qty
+         FROM stock_movements
+         WHERE created_at >= $2
+           AND ($1::bigint IS NULL
+                OR from_location_id = $1::bigint
+                OR to_location_id = $1::bigint)
+         GROUP BY product_id
+       ),
+       stk AS (
+         SELECT product_id, SUM(qty) AS closing_qty
+         FROM stock
+         WHERE ($1::bigint IS NULL OR location_id = $1::bigint)
+         GROUP BY product_id
+       ),
+       prod AS (
+         SELECT product_id, SUM(qty) AS in_production_qty
+         FROM production_orders
+         WHERE status = 'new'
+           AND $1::bigint IS NULL
+         GROUP BY product_id
+       )
+       SELECT
+         p.id   AS product_id,
+         p.name AS product_name,
+         p.unit AS product_unit,
+         p.type AS product_type,
+         ROUND(COALESCE(stk.closing_qty, 0), 4) AS closing_qty,
+         ROUND(COALESCE(mvmt.in_qty, 0), 4)      AS in_qty,
+         ROUND(COALESCE(mvmt.used_qty, 0), 4)    AS used_qty,
+         ROUND(COALESCE(mvmt.movement_sold_qty, 0), 4) AS sold_qty,
+         ROUND(GREATEST(0,
+           COALESCE(stk.closing_qty, 0)
+           - COALESCE(mvmt.in_qty, 0)
+           + COALESCE(mvmt.used_qty, 0)
+           + COALESCE(mvmt.movement_sold_qty, 0)
+         ), 4) AS opening_qty,
+         ROUND(COALESCE(prod.in_production_qty, 0), 4) AS in_production_qty
+       FROM products p
+       LEFT JOIN mvmt    ON mvmt.product_id    = p.id
+       LEFT JOIN stk     ON stk.product_id     = p.id
+       LEFT JOIN prod    ON prod.product_id    = p.id
+       WHERE p.is_active = TRUE
+         AND (
+           COALESCE(stk.closing_qty, 0) > 0
+           OR COALESCE(mvmt.in_qty, 0)   > 0
+           OR COALESCE(mvmt.used_qty, 0) > 0
+           OR COALESCE(mvmt.movement_sold_qty, 0) > 0
+           OR COALESCE(prod.in_production_qty, 0) > 0
+         )
+       ORDER BY p.name`,
+      [locationId, fromDate.toISOString()],
+    );
+
+    res.status(200).json(rows);
+  }),
+);
+
+// GET /api/stock/reorder-list
+// Raw materials below min_level — purchase list with cost_price and estimated total.
+// RBAC: pm/super_admin see all; raw_warehouse_manager sees their location.
+stockRouter.get(
+  '/reorder-list',
+  authenticate,
+  authorize('super_admin', 'pm', 'raw_warehouse_manager', 'ai_assistant'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+
+    let locationId: number | null = null;
+    if (isSuperAdmin(principal) || principal.role === 'ai_assistant') {
+      if (typeof req.query.location_id === 'string' && req.query.location_id !== '') {
+        const parsed = Number(req.query.location_id);
+        if (!Number.isInteger(parsed) || parsed <= 0) throw AppError.validation('Invalid location_id');
+        locationId = parsed;
+      }
+    } else {
+      locationId = principal.locationId ?? null;
+    }
+
+    type ReorderRow = {
+      product_id: number;
+      product_name: string;
+      product_unit: string;
+      current_qty: number;
+      min_level: number;
+      max_level: number;
+      cost_price: number | null;
+      needed_qty: number;
+      estimated_total: number;
+    };
+
+    const { rows } = await query<ReorderRow>(
+      `SELECT
+         p.id                                                        AS product_id,
+         p.name                                                      AS product_name,
+         p.unit                                                      AS product_unit,
+         ROUND(COALESCE(SUM(s.qty), 0), 4)::float                   AS current_qty,
+         ROUND(p.min_qty, 4)::float                                  AS min_level,
+         ROUND(COALESCE(p.max_qty, 0), 4)::float                    AS max_level,
+         COALESCE(p.cost_price, 0)::float                           AS cost_price,
+         ROUND(GREATEST(0,
+           CASE
+             WHEN COALESCE(p.max_qty, 0) > 0
+               THEN p.max_qty - COALESCE(SUM(s.qty), 0)
+             ELSE p.min_qty - COALESCE(SUM(s.qty), 0)
+           END
+         ), 4)::float AS needed_qty,
+         ROUND(GREATEST(0,
+           CASE
+             WHEN COALESCE(p.max_qty, 0) > 0
+               THEN p.max_qty - COALESCE(SUM(s.qty), 0)
+             ELSE p.min_qty - COALESCE(SUM(s.qty), 0)
+           END
+         ) * COALESCE(p.cost_price, 0), 2) AS estimated_total
+       FROM products p
+       LEFT JOIN stock s ON s.product_id = p.id
+         AND ($1::bigint IS NULL OR s.location_id = $1::bigint)
+       WHERE p.type = 'raw'
+         AND p.is_active = TRUE
+         AND p.min_qty > 0
+       GROUP BY p.id, p.name, p.unit, p.cost_price, p.min_qty, p.max_qty
+       HAVING COALESCE(SUM(s.qty), 0) < p.min_qty
+       ORDER BY estimated_total DESC NULLS LAST, p.name`,
+      [locationId],
+    );
+
+    res.status(200).json(rows);
+  }),
+);
+
+// GET /api/stock/finished-by-location
+// Current stock of GP + Tayyor mahsulot per location, with sell_price valuation.
+stockRouter.get(
+  '/finished-by-location',
+  authenticate,
+  authorize(
+    'super_admin', 'pm', 'ai_assistant',
+    'central_warehouse_manager', 'store_manager',
+    'production_manager', 'supply_manager', 'raw_warehouse_manager',
+  ),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+
+    let locationId: number | null = null;
+    if (isSuperAdmin(principal) || principal.role === 'ai_assistant') {
+      if (typeof req.query.location_id === 'string' && req.query.location_id !== '') {
+        const parsed = Number(req.query.location_id);
+        if (!Number.isInteger(parsed) || parsed <= 0) throw AppError.validation('Invalid location_id');
+        locationId = parsed;
+      }
+    } else {
+      locationId = principal.locationId ?? null;
+    }
+
+    type FinishedByLocRow = {
+      location_id: number;
+      location_name: string;
+      location_type: string;
+      product_id: number;
+      product_name: string;
+      product_unit: string;
+      product_type: string;
+      qty: string;
+      sell_price: string | null;
+      total_value: string;
+    };
+
+    const { rows } = await query<FinishedByLocRow>(
+      `SELECT
+         l.id              AS location_id,
+         l.name            AS location_name,
+         l.type            AS location_type,
+         p.id              AS product_id,
+         p.name            AS product_name,
+         p.unit            AS product_unit,
+         p.type            AS product_type,
+         ROUND(s.qty, 4)   AS qty,
+         p.sell_price,
+         ROUND(COALESCE(s.qty * p.sell_price, 0), 2) AS total_value
+       FROM stock s
+       JOIN products  p ON p.id = s.product_id
+       JOIN locations l ON l.id = s.location_id
+       WHERE p.type IN ('gp', 'finished')
+         AND s.qty > 0
+         AND p.is_active = TRUE
+         AND ($1::bigint IS NULL OR s.location_id = $1::bigint)
+       ORDER BY l.name, p.name`,
+      [locationId],
+    );
+
+    res.status(200).json(rows);
   }),
 );
 

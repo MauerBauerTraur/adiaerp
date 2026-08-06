@@ -307,6 +307,9 @@ async function createSubOrders(
  * an open (new|in_progress) production order created today.
  */
 export async function checkSoldProductsAndCreateOrders(): Promise<AutoOrderResult> {
+  // AUTO-ORDER CREATION DISABLED — manual orders only. Remove this block to re-enable.
+  console.log('[auto-order] disabled — skipping.');
+  return { checked: 0, created: 0, skipped: 0 };
   // 1. Find all products sold today whose stock at storage_location is below min_qty.
   const { rows: candidates } = await query<CandidateProduct>(
     `SELECT DISTINCT ON (p.id)
@@ -347,7 +350,7 @@ export async function checkSoldProductsAndCreateOrders(): Promise<AutoOrderResul
     const { rows: zagRows } = await query<{ id: number }>(
       `SELECT id FROM locations WHERE stage_role = 'zagatovka' LIMIT 1`,
     );
-    if (zagRows[0]?.id) defaultSubLocationId = zagRows[0].id;
+    if (zagRows[0]?.id) defaultSubLocationId = zagRows[0]!.id;
   } catch {
     // stage_role not available — use first product's production location
   }
@@ -373,8 +376,8 @@ export async function checkSoldProductsAndCreateOrders(): Promise<AutoOrderResul
       }
 
       // 5. Calculate production quantity: fill to max_qty, or to 2×min if no max.
-      const target = candidate.max_qty !== null && candidate.max_qty > 0
-        ? candidate.max_qty
+      const target: number = (candidate.max_qty != null && (candidate.max_qty as number) > 0)
+        ? (candidate.max_qty as number)
         : candidate.min_qty * 2;
       const rawQty = Math.max(target - candidate.current_stock, candidate.min_qty - candidate.current_stock);
       // Round to 2 decimal places for weight-based units; for pcs round up.
@@ -418,7 +421,7 @@ export async function checkSoldProductsAndCreateOrders(): Promise<AutoOrderResul
                  (production_order_id, product_id, product_name, product_unit,
                   qty_needed, from_location_id, to_location_id)
                VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-              [order.id, candidate.product_id, p.name, p.unit, qty,
+              [order.id, candidate.product_id, p!.name, p!.unit, qty,
                candidate.production_location_id, storageLocId],
             );
           }

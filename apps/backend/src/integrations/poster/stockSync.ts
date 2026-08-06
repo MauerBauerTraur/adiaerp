@@ -138,7 +138,7 @@ async function applyLeftover(
     const sum = Number(leftover.storage_ingredient_sum);
     const left = Number(leftover.storage_ingredient_left);
     if (Number.isFinite(sum) && sum > 0 && Number.isFinite(left) && left > 0) {
-      const derivedCost = Math.round(sum / left);
+      const derivedCost = Math.round(sum / left / 100);
       await query(
         `UPDATE products SET cost_price = $1, updated_at = now()
          WHERE id = $2 AND cost_price IS DISTINCT FROM $1`,

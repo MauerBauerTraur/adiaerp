@@ -6,7 +6,7 @@ import {
   useState,
   type FormEvent,
 } from 'react';
-import { Check, ChevronsUpDown, Loader2, Package } from 'lucide-react';
+import { Check, ChevronsUpDown, Loader2, Package, Plus, Trash2 } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -366,11 +366,15 @@ export function ProductionOrderFormDialog({
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showAllocations, setShowAllocations] = useState(false);
+  const [storeAllocations, setStoreAllocations] = useState<{ location_id: string; qty: string }[]>([]);
 
   // Pre-populate form when dialog opens
   useEffect(() => {
     if (!open) return;
     setError(null);
+    setShowAllocations(false);
+    setStoreAllocations([]);
     if (isEdit && editOrder) {
       setForm({
         product_id: String(editOrder.product_id),
@@ -458,8 +462,14 @@ export function ProductionOrderFormDialog({
     return Array.from(byId.values());
   }, [centralWarehouses.data, supplyLocations.data]);
 
+  // Store locations for per-store allocation breakdown
+  const storeLocsFetch = useApiQuery<Location[]>(
+    open && !isEdit ? '/api/locations?type=store' : null,
+  );
+  const storeLocations = storeLocsFetch.data ?? [];
+
   const eligibleProducts = useMemo(
-    () => products.filter((p) => p.type === 'semi' || p.type === 'finished'),
+    () => products.filter((p) => p.type === 'gp'),
     [products],
   );
   const productOptions = useMemo<ComboOption[]>(
@@ -503,6 +513,27 @@ export function ProductionOrderFormDialog({
       setError("Mahsulot va ishlab chiqarish bo'g'inini tanlang.");
       return;
     }
+    if (!isEdit && form.target_location_id === '') {
+      setError("Maqsad omborni tanlash majburiy.");
+      return;
+    }
+
+    // Validate store allocations when section is enabled
+    const validAllocations = !isEdit && showAllocations
+      ? storeAllocations.filter(a => a.location_id !== '' && a.qty !== '')
+      : [];
+    if (showAllocations && validAllocations.length > 0) {
+      const totalAlloc = validAllocations.reduce((s, a) => {
+        const n = Number(a.qty.replace(',', '.'));
+        return s + (Number.isFinite(n) ? n : 0);
+      }, 0);
+      if (Math.abs(totalAlloc - qty) > 0.001) {
+        setError(
+          `Taqsimlangan miqdor (${totalAlloc}) umumiy miqdorga (${qty}) teng bo'lishi kerak.`,
+        );
+        return;
+      }
+    }
 
     setIsSubmitting(true);
     try {
@@ -531,6 +562,12 @@ export function ProductionOrderFormDialog({
               form.target_location_id === '' ? null : Number(form.target_location_id),
             deadline: form.deadline === '' ? null : form.deadline,
             note: form.note.trim() === '' ? null : form.note.trim(),
+            ...(validAllocations.length > 0 ? {
+              allocations: validAllocations.map(a => ({
+                location_id: Number(a.location_id),
+                qty: Number(a.qty.replace(',', '.')),
+              })),
+            } : {}),
           },
         });
         if (result.sub_orders.length > 0) {
@@ -647,10 +684,13 @@ export function ProductionOrderFormDialog({
                     </Select>
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="po-target">Maqsad (ixtiyoriy)</Label>
+                    <Label htmlFor="po-target">
+                      Maqsad <span className="text-destructive">*</span>
+                    </Label>
                     <Select
                       id="po-target"
                       name="target_location_id"
+                      required
                       value={form.target_location_id}
                       onChange={(e) =>
                         setForm((prev) => ({
@@ -659,7 +699,7 @@ export function ProductionOrderFormDialog({
                         }))
                       }
                     >
-                      <option value="">— Tanlanmagan —</option>
+                      <option value="">— Tanlang —</option>
                       {targetLocations.map((l) => (
                         <option key={l.id} value={l.id}>
                           {l.name}
@@ -712,6 +752,107 @@ export function ProductionOrderFormDialog({
                   }
                 />
               </div>
+
+              {/* Per-store allocation (create mode only) */}
+              {!isEdit && (
+                <div className="space-y-3">
+                  <label className="flex cursor-pointer items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={showAllocations}
+                      onChange={(e) => {
+                        setShowAllocations(e.target.checked);
+                        if (!e.target.checked) setStoreAllocations([]);
+                      }}
+                      className="size-4 rounded border-border accent-primary"
+                    />
+                    <span className="text-sm font-medium">Do'konlarga taqsimlash</span>
+                  </label>
+
+                  {showAllocations && (
+                    <div className="rounded-lg border border-border/70 bg-muted/30 p-3 space-y-2">
+                      {storeAllocations.map((alloc, i) => (
+                        <div key={i} className="flex items-center gap-2">
+                          <Select
+                            value={alloc.location_id}
+                            onChange={(e) =>
+                              setStoreAllocations((prev) =>
+                                prev.map((a, j) =>
+                                  j === i ? { ...a, location_id: e.target.value } : a,
+                                ),
+                              )
+                            }
+                            className="flex-1"
+                          >
+                            <option value="">— Do'kon —</option>
+                            {storeLocations.map((l) => (
+                              <option key={l.id} value={l.id}>
+                                {l.name}
+                              </option>
+                            ))}
+                          </Select>
+                          <Input
+                            type="text"
+                            inputMode="decimal"
+                            placeholder="0"
+                            value={alloc.qty}
+                            onChange={(e) =>
+                              setStoreAllocations((prev) =>
+                                prev.map((a, j) =>
+                                  j === i ? { ...a, qty: e.target.value } : a,
+                                ),
+                              )
+                            }
+                            className="w-20 shrink-0"
+                          />
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setStoreAllocations((prev) => prev.filter((_, j) => j !== i))
+                            }
+                            className="shrink-0 text-muted-foreground hover:text-destructive"
+                          >
+                            <Trash2 className="size-4" />
+                          </button>
+                        </div>
+                      ))}
+
+                      {storeAllocations.length > 0 && (() => {
+                        const allocated = storeAllocations.reduce((s, a) => {
+                          const n = Number(a.qty.replace(',', '.'));
+                          return s + (Number.isFinite(n) && n > 0 ? n : 0);
+                        }, 0);
+                        const total = Number(form.qty.replace(',', '.'));
+                        const remaining = Number.isFinite(total) ? total - allocated : null;
+                        return (
+                          <p className={`text-xs tabular-nums ${
+                            remaining !== null && Math.abs(remaining) < 0.001
+                              ? 'text-emerald-600 dark:text-emerald-400'
+                              : 'text-muted-foreground'
+                          }`}>
+                            Taqsimlandi: {allocated}
+                            {remaining !== null && remaining !== 0 && ` · Qoldi: ${remaining > 0 ? '+' : ''}${remaining.toFixed(2)}`}
+                            {remaining !== null && Math.abs(remaining) < 0.001 && ' ✓'}
+                          </p>
+                        );
+                      })()}
+
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="gap-1.5 text-xs"
+                        onClick={() =>
+                          setStoreAllocations((prev) => [...prev, { location_id: '', qty: '' }])
+                        }
+                      >
+                        <Plus className="size-3" />
+                        Do'kon qo'shish
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {error && (
                 <p

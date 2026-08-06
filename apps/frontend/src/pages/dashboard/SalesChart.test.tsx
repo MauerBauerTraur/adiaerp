@@ -1,46 +1,59 @@
 /**
- * F4.4 — SalesChart widget tests.
+ * SalesChart widget tests.
  *
- * Verifies the 30-day sales chart renders the chart container when data
- * is present, falls back to an empty state when the points array is
- * empty, and computes the header total via the supplied series.
+ * The component now fetches /api/sales and /api/locations?type=store.
+ * We mock `fetch` to control what it returns.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
-import { renderWithProviders } from '@/test/render-helpers';
+import { renderWithProviders, jsonResponse } from '@/test/render-helpers';
 import { SalesChart } from './SalesChart';
-import type { DashboardSalesPoint } from '@/lib/types';
 
-function buildPoints(qtys: number[]): DashboardSalesPoint[] {
-  const base = new Date(2026, 4, 1);
-  return qtys.map((qty, i) => {
-    const d = new Date(base);
-    d.setDate(d.getDate() + i);
-    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
-      d.getDate(),
-    ).padStart(2, '0')}`;
-    return { date: iso, qty, revenue: qty * 1000, receipts: Math.ceil(qty / 5) };
+const EMPTY_SALES = { items: [], total: 0, limit: 50, offset: 0 };
+const EMPTY_LOCATIONS: unknown[] = [];
+
+beforeEach(() => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    const url = String(typeof input === 'string' ? input : (input as Request).url);
+    if (url.includes('/api/locations')) return jsonResponse(200, EMPTY_LOCATIONS);
+    if (url.includes('/api/sales')) return jsonResponse(200, EMPTY_SALES);
+    return jsonResponse(404, {});
   });
-}
+});
 
 describe('SalesChart', () => {
-  it('renders the empty branch when no points are provided', () => {
-    renderWithProviders(<SalesChart points={[]} />);
-    expect(screen.getByText('Sotuv ma’lumotlari yo‘q.')).toBeInTheDocument();
-    expect(screen.queryByTestId('sales-chart')).not.toBeInTheDocument();
+  it('renders the empty branch when no data is returned', async () => {
+    renderWithProviders(<SalesChart />);
+    expect(await screen.findByText("Sotuv ma'lumotlari yo'q.")).toBeInTheDocument();
   });
 
-  it('renders the chart container when points are present', () => {
-    const points = buildPoints([10, 20, 30, 40]);
-    renderWithProviders(<SalesChart points={points} />);
-    expect(screen.getByTestId('sales-chart')).toBeInTheDocument();
+  it('renders sales rows when data is present', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(typeof input === 'string' ? input : (input as Request).url);
+      if (url.includes('/api/locations')) return jsonResponse(200, EMPTY_LOCATIONS);
+      if (url.includes('/api/sales')) {
+        return jsonResponse(200, {
+          items: [{
+            id: 1, store_id: 10, store_name: "Do'kon A",
+            product_id: 5, product_name: 'Tort', product_unit: 'pcs',
+            qty: 2, price: 50000, cost_price: null,
+            sold_at: '2026-07-13T10:00:00Z', poster_transaction_id: 99,
+          }],
+          total: 1, limit: 50, offset: 0,
+        });
+      }
+      return jsonResponse(404, {});
+    });
+
+    renderWithProviders(<SalesChart />);
+    expect(await screen.findByText('Tort')).toBeInTheDocument();
+    expect(await screen.findByText("Do'kon A")).toBeInTheDocument();
   });
 
-  it('shows the aggregate total in the header', () => {
-    const points = buildPoints([5, 10, 15]); // total = 30
-    renderWithProviders(<SalesChart points={points} />);
-    // The "Jami" label sits above the total in the header.
-    expect(screen.getByText('Jami')).toBeInTheDocument();
-    expect(screen.getByText('30')).toBeInTheDocument();
+  it('shows range toggle buttons', () => {
+    renderWithProviders(<SalesChart />);
+    expect(screen.getByRole('button', { name: 'Bugun' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Bu hafta' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Bu oy' })).toBeInTheDocument();
   });
 });

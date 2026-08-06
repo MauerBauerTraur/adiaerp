@@ -86,8 +86,10 @@ export async function runMigrations(): Promise<string[]> {
   return applied;
 }
 
-// Run directly when invoked as a script (`tsx src/db/migrate.ts`).
-const invokedDirectly = process.argv[1] !== undefined && process.argv[1].endsWith('migrate.ts');
+// Run directly when invoked as a script (`tsx src/db/migrate.ts` or `node dist/db/migrate.js`).
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  (process.argv[1].endsWith('migrate.ts') || process.argv[1].endsWith('migrate.js'));
 if (invokedDirectly) {
   runMigrations()
     .then(() => closePool())

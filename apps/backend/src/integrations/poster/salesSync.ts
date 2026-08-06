@@ -25,6 +25,7 @@ import {
   getPmRecipients,
 } from '../../services/notify.js';
 import type { PosterClient, PosterTransactionFull } from './client.js';
+import { resolveModificationInfo } from './modificationSync.js';
 import {
   finishSyncRun,
   notifyPosterSyncFailed,
@@ -63,10 +64,14 @@ async function resolveStoreId(posterSpotId: number): Promise<number | null> {
   return rows[0]?.id ?? null;
 }
 
-/** Locate an ADIA product by Poster menu product_id (sales side). */
+/** Locate an ADIA product by Poster menu product_id (sales side).
+ * Only matches sellable types (finished, gp) — never semi or raw. */
 async function resolveSalesProductId(posterProductId: number): Promise<number | null> {
   const { rows } = await query<{ id: number }>(
-    `SELECT id FROM products WHERE poster_product_id = $1`,
+    `SELECT id FROM products
+     WHERE poster_product_id = $1
+       AND type IN ('finished', 'gp')
+     ORDER BY (type = 'finished') DESC, id LIMIT 1`,
     [posterProductId],
   );
   return rows[0]?.id ?? null;
@@ -125,12 +130,45 @@ export async function ingestTransaction(
     const line = lines[i]!;
     const posterProductId = Number(line.product_id);
     const num = Number(line.num);
-    const price = Number(line.product_price ?? 0);
+    // Poster dash.getTransaction returns product_price in tiyin (×100). Divide by
+    // 100 to convert to so'm before storing — all downstream code works in so'm.
+    const price = Number(line.product_price ?? 0) / 100;
     if (!Number.isInteger(posterProductId) || posterProductId <= 0) continue;
     if (!Number.isFinite(num) || num <= 0) continue;
 
-    const productId = await resolveSalesProductId(posterProductId);
+    let productId = await resolveSalesProductId(posterProductId);
     if (productId === null) continue; // menu item not yet seeded — skip silently
+
+    // Resolve weight-based modification: КУСОК (55.55g) / ЦЕЛЫЙ (1000g) = 0.0556 pcs.
+    // When `poster_product_modifications.product_id` is set, it overrides the
+    // direct poster_product_id → ERP lookup — this routes modifier-based sales
+    // to the canonical finished product (e.g. all ЦЕЛЫЙ/ПОЛОВИНА/КУСОК sales
+    // deduct from "Г/П ТВОРОЖНЫЙ (ЦЕЛЫЙ)" rather than the raw "ТВОРОЖНЫЙ" entry).
+    const modificationId =
+      line.modification_id && line.modification_id !== '' && line.modification_id !== '0'
+        ? Number(line.modification_id)
+        : null;
+    let effectiveQty = num;
+    if (modificationId !== null && Number.isFinite(modificationId) && modificationId > 0) {
+      const modInfo = await resolveModificationInfo(posterProductId, modificationId);
+      if (modInfo.productId !== null) {
+        productId = modInfo.productId;
+      }
+      effectiveQty = num * modInfo.factor;
+    } else if (modificationId === null && price > 0) {
+      // Poster omitted modification_id (historical imports or weight-based POS entries).
+      // Infer the fractional qty from line_total ÷ sell_price_per_whole_unit.
+      // For regular whole-unit products this equals num (price = num × sell_price).
+      // For size-variant products (КУСОК/ПОЛОВИНА/ЦЕЛЫЙ) it correctly scales the qty.
+      const { rows: spRows } = await query<{ sell_price: string | null }>(
+        `SELECT sell_price FROM products WHERE id = $1`,
+        [productId],
+      );
+      const sellPrice = Number(spRows[0]?.sell_price ?? 0);
+      if (sellPrice > 0) {
+        effectiveQty = price / sellPrice;
+      }
+    }
 
     // 0-based positional id within the check — Poster does not surface a stable
     // line id, so we synthesise one. Combined with (tx_id, product_id) it makes
@@ -142,11 +180,11 @@ export async function ingestTransaction(
         const inserted = await txc.query(
           `INSERT INTO sales
              (store_id, product_id, qty, price, sold_at,
-              poster_transaction_id, poster_line_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
+              poster_transaction_id, poster_line_id, modification_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
            ON CONFLICT (poster_transaction_id, product_id, poster_line_id) DO NOTHING
            RETURNING id`,
-          [storeId, productId, num, price, closedAt, transactionId, lineId],
+          [storeId, productId, effectiveQty, price, closedAt, transactionId, lineId, modificationId],
         );
         // Only decrement stock when the sale row is brand-new — a replay of
         // the same line must NOT double-decrement (the movements partial
@@ -163,18 +201,18 @@ export async function ingestTransaction(
           [storeId, productId],
         );
         const have = Number(current.rows[0]?.qty ?? 0);
-        const decrement = Math.min(have, num);
+        const decrement = Math.min(have, effectiveQty);
         // EPIC 8.3 — fors major: the check rang up MORE than ADIA had on hand.
         // Stock is clamped to 0 (invariant 3 — never negative); we surface a
         // chek-level "noto'g'ri urilgan" alert so a human reconciles it.
-        const shortfall = num > have ? num - have : 0;
+        const shortfall = effectiveQty > have ? effectiveQty - have : 0;
         if (shortfall > 0) {
           await notifyWrongKeyedCheck(txc, {
             storeId,
             productId,
             transactionId,
             lineId,
-            sold: num,
+            sold: effectiveQty,
             had: have,
             shortfall,
           });
@@ -205,8 +243,9 @@ export async function ingestTransaction(
             poster_transaction_id: transactionId,
             product_id: productId,
             store_id: storeId,
-            qty: num,
+            qty: effectiveQty,
             decrement,
+            modification_id: modificationId,
           },
         });
         return { applied: true, decrement, shortfall };

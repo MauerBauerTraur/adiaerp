@@ -224,7 +224,7 @@ async function deliverOne(bot: SendableBot, row: OutboxRow): Promise<Outcome> {
   // payload (`unknown` shape, missing buttons) silently degrades to "no
   // keyboard"; we never want one bad row to abort the cycle.
   const replyMarkup = buildReplyMarkup(row.inline_callback);
-  const sendOpts: Record<string, unknown> = {};
+  const sendOpts: Record<string, unknown> = { parse_mode: 'Markdown' };
   if (replyMarkup !== undefined) {
     sendOpts.reply_markup = replyMarkup;
   }
@@ -254,16 +254,16 @@ async function deliverOne(bot: SendableBot, row: OutboxRow): Promise<Outcome> {
 }
 
 /**
- * Assemble the plain-text message body. Title goes on line one, body on
- * the rest. We deliberately avoid Markdown/HTML — Grammy will not retry a
- * `parse_mode` failure for us and the spec §9.5 demands plain text.
+ * Assemble the Markdown message body. Title is bolded, body follows.
+ * Uses Telegram Markdown v1 — only *bold* and basic formatting parsed.
  */
 function formatMessage(row: OutboxRow): string {
   const title = row.title.trim();
   const body = row.body.trim();
-  if (title === '') return body;
-  if (body === '') return title;
-  return `${title}\n${body}`;
+  const parts: string[] = [];
+  if (title !== '') parts.push(`*${title}*`);
+  if (body !== '') parts.push(body);
+  return parts.join('\n\n');
 }
 
 /**

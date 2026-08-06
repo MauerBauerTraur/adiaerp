@@ -41,7 +41,7 @@ export type LocationType =
   | 'store';
 
 /** Product classification — db-schema product_type enum. */
-export type ProductType = 'raw' | 'semi' | 'finished';
+export type ProductType = 'raw' | 'semi' | 'finished' | 'gp';
 
 /** Unit of measure — db-schema unit_type enum. */
 export type Unit = 'kg' | 'l' | 'pcs';
@@ -190,6 +190,8 @@ export interface Product {
   max_qty?: number | null;
   /** When true, Poster sync will not overwrite this product's recipe. */
   recipe_locked?: boolean;
+  /** Manual manufacturing cost per unit (so'm). Separate from cost_price (raw material). */
+  production_cost?: number | null;
 }
 
 /** One row from the stock-alerts endpoint. */
@@ -448,9 +450,15 @@ export interface ProductionOrder {
   product_name: string;
   location_name: string;
   target_location_name: string | null;
+  /** Parent GP's target_location_name — COALESCE(ptl.name, prl.name), falls back to parent's replenishment requester when no target set. */
+  parent_target_location_name?: string | null;
+  /** Replenishment requester's location name (the do'kon that ordered). Null for manually-created orders. */
+  requester_location_name?: string | null;
   /** ADR-0016: 'final' (main order) | 'zagatovka' (auto sub-order for semi). */
   stage_role?: string;
   parent_production_order_id?: number | null;
+  /** Manufacturing cost per unit (so'm). Null means not configured on the product. */
+  production_cost?: number | null;
 }
 
 /** One node in the recursive BOM tree returned by GET /api/production-orders/:id/bom. */
@@ -501,12 +509,21 @@ export interface ProductionDispatch {
   received_by: number | null;
 }
 
+/** Per-store delivery allocation for a production order. */
+export interface ProductionOrderAllocation {
+  id: number;
+  store_location_id: number;
+  store_location_name: string;
+  qty: number;
+}
+
 /** `GET /api/production-orders/:id/bom` response envelope. */
 export interface ProductionOrderBomResponse {
   order: ProductionOrder & { product_unit: string };
   bom: BomNode[];
   dispatch: DispatchLine[];
   sub_orders: (ProductionOrder & { product_unit: string })[];
+  allocations?: ProductionOrderAllocation[];
 }
 
 /** `GET /api/production-orders/bom-preview` response. */
@@ -519,7 +536,7 @@ export interface BomPreviewResponse {
 /** `GET /api/production-orders/daily-dispatch` response envelope. */
 export interface DailyDispatchResponse {
   date: string;
-  orders: { id: number; product_id: number; qty: number; product_name: string; location_name: string; product_type: string }[];
+  orders: { id: number; product_id: number; qty: number; product_name: string; unit: string; location_id: number | null; location_name: string; product_type: string; production_cost: number | null; target_location_name: string | null; parent_production_order_id: number | null; parent_product_name: string | null; parent_unit: string | null; parent_qty: number | null; parent_production_cost: number | null; grandparent_production_order_id: number | null; grandparent_product_name: string | null; grandparent_unit: string | null; grandparent_qty: number | null; grandparent_production_cost: number | null }[];
   dispatch: DispatchLine[];
   dispatch_items: ProductionDispatch[];
 }
@@ -1631,4 +1648,43 @@ export interface Nakladnoy {
 /** `GET /api/nakladnoy` envelope (EPIC 8.4). */
 export interface NakladnoyListResponse {
   items: Nakladnoy[];
+}
+
+// ---------------------------------------------------------------------------
+// Production cost summary — GET /api/production-orders/cost-summary
+// ---------------------------------------------------------------------------
+
+export interface ProductionCostProduct {
+  product_id: number;
+  product_name: string;
+  unit: Unit;
+  product_type: 'raw' | 'semi' | 'finished';
+  total_qty: number;
+  production_cost: number | null;
+  total_cost: number | null;
+  sell_price: number | null;
+  total_revenue: number | null;
+  xomashyo_cost_per_unit: number | null;
+  total_xomashyo_cost: number | null;
+  profit_per_unit: number | null;
+  total_profit: number | null;
+  order_count: number;
+}
+
+export interface ProductionCostGroup {
+  location_id: number;
+  location_name: string;
+  total_cost: number;
+  total_revenue: number;
+  total_profit: number;
+  total_xomashyo_cost: number;
+  products: ProductionCostProduct[];
+}
+
+export interface ProductionCostSummary {
+  groups: ProductionCostGroup[];
+  grand_total: number;
+  grand_revenue: number;
+  grand_profit: number;
+  grand_xomashyo: number;
 }

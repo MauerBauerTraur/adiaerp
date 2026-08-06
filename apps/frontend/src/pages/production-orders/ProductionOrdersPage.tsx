@@ -3,14 +3,16 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   AlertCircle,
   ArrowLeft,
-  ChevronDown,
-  ChevronRight,
+  CheckCircle2,
   Eye,
   Loader2,
   Pencil,
   Plus,
+  Printer,
+  Send,
   Trash2,
 } from 'lucide-react';
+import { FilterSheet, FilterField, FilterTrigger } from '@/components/ui/filter-sheet';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -26,12 +28,10 @@ import { useCanAct } from '@/hooks/useCanAct';
 import { useAuth } from '@/hooks/useAuth';
 import { apiRequest, ApiError } from '@/lib/api-client';
 import { formatQty } from '@/lib/format';
-import {
-  PRODUCTION_ORDER_STATUS_LABELS,
-  PRODUCTION_ORDER_STATUS_OPTIONS,
-} from '@/lib/labels';
+import { PRODUCTION_ORDER_STATUS_LABELS } from '@/lib/labels';
 import type { Location, Product, ProductionOrder, ProductionOrderStatus } from '@/lib/types';
 import { ProductionOrderFormDialog } from './ProductionOrderFormDialog';
+import { QuickCostDialog } from './QuickCostDialog';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -42,24 +42,6 @@ const STATUS_DOT: Record<string, string> = {
   done: 'bg-emerald-500',
   cancelled: 'bg-muted-foreground/40',
 };
-const STATUS_RING: Record<string, string> = {
-  new: 'ring-amber-400/30',
-  in_progress: 'ring-blue-400/30',
-  done: 'ring-emerald-500/30',
-  cancelled: 'ring-border',
-};
-const SEX_DOT_COLORS = [
-  'bg-violet-400',
-  'bg-sky-400',
-  'bg-rose-400',
-  'bg-orange-400',
-  'bg-teal-400',
-  'bg-indigo-400',
-];
-
-function getDotColor(idx: number) {
-  return SEX_DOT_COLORS[idx % SEX_DOT_COLORS.length] ?? 'bg-muted-foreground';
-}
 
 function isOverdue(deadline: string | null | undefined, status: string) {
   if (!deadline || status === 'done' || status === 'cancelled') return false;
@@ -73,11 +55,12 @@ function PipelineStat({ orders }: { orders: ProductionOrder[] }) {
   const total = orders.length;
   if (total === 0) return null;
   const newCount = orders.filter((o) => o.status === 'new').length;
-  const inProgress = orders.filter((o) => o.status === 'in_progress').length;
   const done = orders.filter((o) => o.status === 'done').length;
-  const cancelled = orders.filter((o) => o.status === 'cancelled').length;
   const overdueCount = orders.filter(
-    (o) => o.deadline && o.status !== 'done' && o.status !== 'cancelled' &&
+    (o) =>
+      o.deadline &&
+      o.status !== 'done' &&
+      o.status !== 'cancelled' &&
       o.deadline < new Date().toISOString().slice(0, 10),
   ).length;
 
@@ -98,54 +81,24 @@ function PipelineStat({ orders }: { orders: ProductionOrder[] }) {
         </div>
       </div>
 
-      {/* Segmented progress bar */}
       <div className="flex h-2.5 overflow-hidden rounded-full bg-muted/30 gap-px">
         {done > 0 && (
-          <div
-            className="bg-emerald-500 transition-all"
-            style={{ width: `${(done / total) * 100}%` }}
-          />
-        )}
-        {inProgress > 0 && (
-          <div
-            className="bg-blue-400 transition-all"
-            style={{ width: `${(inProgress / total) * 100}%` }}
-          />
+          <div className="bg-emerald-500 transition-all" style={{ width: `${(done / total) * 100}%` }} />
         )}
         {newCount > 0 && (
-          <div
-            className="bg-amber-400 transition-all"
-            style={{ width: `${(newCount / total) * 100}%` }}
-          />
-        )}
-        {cancelled > 0 && (
-          <div
-            className="bg-muted-foreground/20 transition-all"
-            style={{ width: `${(cancelled / total) * 100}%` }}
-          />
+          <div className="bg-amber-400 transition-all" style={{ width: `${(newCount / total) * 100}%` }} />
         )}
       </div>
 
-      {/* 4-column stats */}
-      <div className="grid grid-cols-4 divide-x divide-border/40">
+      <div className="grid grid-cols-2 divide-x divide-border/40">
         <div className="pr-4 space-y-0.5">
-          <p className="text-2xl font-bold tabular-nums text-amber-600 dark:text-amber-400">
-            {newCount}
-          </p>
-          <p className="text-xs text-muted-foreground">Boshlash</p>
+          <p className="text-2xl font-bold tabular-nums text-amber-600 dark:text-amber-400">{newCount}</p>
+          <p className="text-xs text-muted-foreground">Yaratildi</p>
         </div>
-        <div className="px-4 space-y-0.5">
-          <p className="text-2xl font-bold tabular-nums text-blue-600 dark:text-blue-400">
-            {inProgress}
-          </p>
-          <p className="text-xs text-muted-foreground">Topshirildi</p>
-        </div>
-        <div className="px-4 space-y-0.5">
-          <p className="text-2xl font-bold tabular-nums text-emerald-600 dark:text-emerald-400">
-            {done}
-          </p>
+        <div className="pl-4 space-y-0.5">
+          <p className="text-2xl font-bold tabular-nums text-emerald-600 dark:text-emerald-400">{done}</p>
           <p className="text-xs text-muted-foreground">
-            Qabul qildi
+            Tayyor
             {done > 0 && (
               <span className="ml-1 text-[10px] text-muted-foreground/60">
                 {Math.round((done / total) * 100)}%
@@ -153,638 +106,372 @@ function PipelineStat({ orders }: { orders: ProductionOrder[] }) {
             )}
           </p>
         </div>
-        <div className="pl-4 space-y-0.5">
-          <p className="text-2xl font-bold tabular-nums text-muted-foreground/70">
-            {cancelled}
-          </p>
-          <p className="text-xs text-muted-foreground">Bekor</p>
-        </div>
       </div>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// SubOrderRow — single sub-order inside the expandable list
+// Print helper — opens a new window with formatted order info
 // ---------------------------------------------------------------------------
-function SubOrderRow({
-  sub,
-  unit,
-  canAct,
-  isBusy,
-  onStart,
-  onDone,
-  onNavigate,
-}: {
-  sub: ProductionOrder;
-  unit: string;
-  canAct: boolean;
-  isBusy: boolean;
-  onStart: () => void;
-  onDone: () => void;
-  onNavigate: () => void;
-}) {
-  return (
-    <div className="flex items-center gap-2.5 px-3 py-2">
-      <span
-        className={`size-2 shrink-0 rounded-full ${STATUS_DOT[sub.status] ?? 'bg-muted'}`}
-      />
-      <button
-        type="button"
-        onClick={onNavigate}
-        className="w-10 shrink-0 text-left text-xs font-bold text-foreground hover:underline"
-      >
-        #{sub.id}
-      </button>
-      <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-        {sub.product_name}
-      </span>
-      <span className="shrink-0 text-xs tabular-nums font-medium">
-        {formatQty(sub.qty)} {unit}
-      </span>
-      {canAct && sub.status === 'new' && (
-        <button
-          type="button"
-          disabled={isBusy}
-          onClick={onStart}
-          className="shrink-0 rounded-lg bg-amber-500/10 px-2 py-1 text-[11px] font-semibold text-amber-700 dark:text-amber-400 hover:bg-amber-500/20 transition-colors disabled:opacity-50"
-        >
-          {isBusy ? <Loader2 className="size-3 animate-spin" /> : 'Boshlash'}
-        </button>
-      )}
-      {canAct && sub.status === 'in_progress' && (
-        <button
-          type="button"
-          disabled={isBusy}
-          onClick={onDone}
-          className="shrink-0 rounded-lg bg-emerald-500/10 px-2 py-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
-        >
-          {isBusy ? <Loader2 className="size-3 animate-spin" /> : 'Topshirish'}
-        </button>
-      )}
-      {(sub.status === 'done' || sub.status === 'cancelled') && (
-        <button
-          type="button"
-          onClick={onNavigate}
-          className="shrink-0 rounded-lg bg-muted/40 p-1.5 hover:bg-muted/70 transition-colors"
-        >
-          <Eye className="size-3 text-muted-foreground" />
-        </button>
-      )}
-    </div>
-  );
+function openPrintWindow(order: ProductionOrder, unit: string) {
+  const win = window.open('', '_blank', 'width=700,height=600');
+  if (!win) return;
+  const deadline = order.deadline
+    ? `<div class="row"><span class="label">Muddat</span><span class="value">${order.deadline}</span></div>`
+    : '';
+  const note = order.note
+    ? `<div class="row"><span class="label">Izoh</span><span class="value">${order.note}</span></div>`
+    : '';
+  const created = new Date(order.created_at).toLocaleDateString('uz-UZ', {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  });
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Zayafka #${order.id}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', sans-serif; padding: 30px; color: #111; }
+  h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
+  .sub { color: #666; font-size: 13px; margin-bottom: 20px; }
+  .divider { border: none; border-top: 1px solid #ddd; margin: 16px 0; }
+  .row { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid #f0f0f0; }
+  .label { color: #888; font-size: 13px; }
+  .value { font-weight: 600; font-size: 14px; }
+  .big { font-size: 22px; color: #1a56db; }
+  .footer { margin-top: 24px; color: #aaa; font-size: 11px; }
+  .print-btn { margin-top: 20px; padding: 8px 20px; background: #1a56db; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
+  @media print { .print-btn { display: none; } }
+</style>
+</head><body>
+<h1>Ishlab chiqarish zayafkasi</h1>
+<p class="sub">ADIA ERP · Yaratilgan: ${created}</p>
+<hr class="divider">
+<div class="row"><span class="label"># Zayafka</span><span class="value">#${order.id}</span></div>
+<div class="row"><span class="label">Mahsulot</span><span class="value">${order.product_name}</span></div>
+<div class="row"><span class="label">Miqdor</span><span class="value big">${formatQty(order.qty)} ${unit}</span></div>
+<div class="row"><span class="label">Bo'g'in (Sex)</span><span class="value">${order.location_name}</span></div>
+<div class="row"><span class="label">Holat</span><span class="value">${PRODUCTION_ORDER_STATUS_LABELS[order.status] ?? order.status}</span></div>
+${deadline}${note}
+<p class="footer">ADIA ERP — avtomatik hujjat</p>
+<button class="print-btn" onclick="window.print()">Chop etish / PDF</button>
+</body></html>`);
+  win.document.close();
+  win.focus();
 }
 
 // ---------------------------------------------------------------------------
-// OrderCard
+// Global list print — all visible orders as a matrix (rows=products, cols=sexlar)
 // ---------------------------------------------------------------------------
-function OrderCard({
-  order,
-  unit,
-  subOrders,
-  productById,
-  canActOnRow,
-  transition,
-  busyId,
-  canCreate,
-  onEdit,
-  onDelete,
-  navigate,
-}: {
-  order: ProductionOrder;
-  unit: string;
-  subOrders: ProductionOrder[];
-  productById: Map<number, Product>;
-  canActOnRow: (loc: number | null | undefined) => boolean;
-  transition: (id: number, s: 'in_progress' | 'done' | 'cancelled') => Promise<void>;
-  busyId: number | null;
-  canCreate: boolean;
-  onEdit: () => void;
-  onDelete: () => void;
-  navigate: (p: string) => void;
-}) {
-  const [subOpen, setSubOpen] = useState(
-    subOrders.some((s) => s.status !== 'done' && s.status !== 'cancelled'),
-  );
-  const isBusy = busyId === order.id;
-  const canAct = canActOnRow(order.location_id);
-  const overdue = isOverdue(order.deadline, order.status);
-  const doneSubCount = subOrders.filter((s) => s.status === 'done').length;
-  const isCancelled = order.status === 'cancelled';
+function openOrdersListPrint(orders: ProductionOrder[], dateStr: string) {
+  // Unique locations (sexlar), sorted
+  const locMap = new Map<string, string>();
+  for (const o of orders) locMap.set(o.location_name, o.location_name);
+  const locs = [...locMap.keys()].sort((a, b) => a.localeCompare(b));
 
-  const dotClass = STATUS_DOT[order.status] ?? 'bg-muted';
-  const ringClass = STATUS_RING[order.status] ?? 'ring-border';
+  // Products aggregated: name → { byLoc: Map<locName, qty>, total }
+  type ProdRow = { byLoc: Map<string, number>; total: number };
+  const prodMap = new Map<string, ProdRow>();
+  for (const o of orders) {
+    if (!prodMap.has(o.product_name)) prodMap.set(o.product_name, { byLoc: new Map(), total: 0 });
+    const row = prodMap.get(o.product_name)!;
+    row.byLoc.set(o.location_name, (row.byLoc.get(o.location_name) ?? 0) + o.qty);
+    row.total += o.qty;
+  }
+  const prods = [...prodMap.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 
-  return (
-    <div
-      className={`rounded-2xl border border-border/40 bg-card shadow-sm hover:shadow-md transition-shadow overflow-hidden ${isCancelled ? 'opacity-55' : ''}`}
-    >
-      {/* Card header */}
-      <div
-        className="flex items-start gap-3 p-4 cursor-pointer"
-        onClick={() => navigate(`/production-orders/${order.id}`)}
-      >
-        {/* Status dot with ring */}
-        <div className="mt-0.5 shrink-0">
-          <span
-            className={`flex size-4 items-center justify-center rounded-full ring-4 ${dotClass} ${ringClass}`}
-          />
-        </div>
+  function fmtN(n: number) {
+    if (n === 0) return '';
+    return Number.isInteger(n) ? String(n) : n.toFixed(3).replace(/\.?0+$/, '');
+  }
 
-        {/* Main info */}
-        <div className="min-w-0 flex-1">
-          <div className="flex items-baseline gap-1.5">
-            <span className="text-xs font-mono text-muted-foreground">#{order.id}</span>
-            {order.parent_production_order_id != null && (
-              <span className="text-[10px] text-muted-foreground/60">
-                ↳ #{order.parent_production_order_id}
-              </span>
-            )}
-          </div>
-          <p className="text-[15px] font-bold leading-snug">{order.product_name}</p>
-          <p className="text-xs text-muted-foreground">{order.location_name}</p>
-        </div>
+  const thStyle = 'border:1px solid #d0d7de;padding:6px 8px;background:#f5c518;font-size:11px;text-align:center;font-weight:700;white-space:nowrap;';
+  const th0Style = 'border:1px solid #d0d7de;padding:6px 8px;background:#1a56db;color:#fff;font-size:11px;font-weight:700;white-space:nowrap;min-width:160px;';
+  const thTotalStyle = 'border:1px solid #d0d7de;padding:6px 8px;background:#0e7490;color:#fff;font-size:11px;font-weight:700;text-align:center;';
 
-        {/* Right: qty + deadline */}
-        <div className="shrink-0 text-right">
-          <p className="text-lg font-bold tabular-nums leading-tight">
-            {formatQty(order.qty)}
-            <span className="ml-1 text-sm font-normal text-muted-foreground">{unit}</span>
-          </p>
-          {order.deadline && (
-            <p
-              className={`text-xs ${overdue ? 'text-red-500 dark:text-red-400 font-semibold' : 'text-muted-foreground'}`}
-            >
-              {overdue ? '⚠ ' : ''}
-              {order.deadline}
-            </p>
-          )}
-          <p className="mt-0.5 text-xs font-medium text-muted-foreground">
-            {PRODUCTION_ORDER_STATUS_LABELS[order.status]}
-          </p>
-        </div>
-      </div>
+  const headerCols = locs.map((loc) => `<th style="${thStyle}">${loc}</th>`).join('');
+  const bodyRows = prods.map(([name, row], idx) => {
+    const bg = idx % 2 === 0 ? '#fff' : '#f8fafc';
+    const cells = locs.map((loc) => {
+      const q = row.byLoc.get(loc) ?? 0;
+      const dim = q === 0 ? 'background:#f1f5f9;' : '';
+      return `<td style="border:1px solid #d0d7de;padding:5px 8px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px;${dim}">${fmtN(q)}</td>`;
+    }).join('');
+    const totalCellStyle = 'border:1px solid #d0d7de;padding:5px 8px;text-align:right;font-weight:700;font-size:12px;background:#e0f2fe;font-variant-numeric:tabular-nums;';
+    return `<tr style="background:${bg}"><td style="border:1px solid #d0d7de;padding:5px 8px;font-size:12px;font-weight:600;">${name}</td>${cells}<td style="${totalCellStyle}">${fmtN(row.total)}</td></tr>`;
+  }).join('');
 
-      {/* Sub-order progress bar */}
-      {subOrders.length > 0 && (
-        <div className="mx-4 mb-3 space-y-1">
-          <div className="flex h-1.5 overflow-hidden rounded-full bg-muted/40">
-            <div
-              className="bg-emerald-500 transition-all"
-              style={{ width: `${(doneSubCount / subOrders.length) * 100}%` }}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Sub-orders collapsible */}
-      {subOrders.length > 0 && (
-        <div className="border-t border-border/20">
-          <button
-            type="button"
-            onClick={() => setSubOpen((o) => !o)}
-            className="flex w-full items-center gap-2 px-4 py-2 text-left hover:bg-muted/20 transition-colors"
-          >
-            {subOpen ? (
-              <ChevronDown className="size-3.5 text-muted-foreground" />
-            ) : (
-              <ChevronRight className="size-3.5 text-muted-foreground" />
-            )}
-            <span className="text-xs text-muted-foreground">
-              {doneSubCount}/{subOrders.length} ta zagatovka
-            </span>
-            {subOrders.some(
-              (s) => s.status !== 'done' && s.status !== 'cancelled',
-            ) && (
-              <span className="ml-auto inline-flex size-2 rounded-full bg-amber-400" />
-            )}
-          </button>
-          {subOpen && (
-            <div className="mx-3 mb-3 overflow-hidden rounded-xl bg-muted/25 divide-y divide-border/20">
-              {subOrders.map((sub) => {
-                const subUnit = productById.get(sub.product_id)?.unit ?? '';
-                const subBusy = busyId === sub.id;
-                const subCanAct = canActOnRow(sub.location_id);
-                return (
-                  <SubOrderRow
-                    key={sub.id}
-                    sub={sub}
-                    unit={subUnit}
-                    canAct={subCanAct}
-                    isBusy={subBusy}
-                    onStart={() => void transition(sub.id, 'in_progress')}
-                    onDone={() => void transition(sub.id, 'done')}
-                    onNavigate={() => navigate(`/production-orders/${sub.id}`)}
-                  />
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Action buttons */}
-      {!isCancelled && (
-        <div
-          className="flex items-center gap-2 border-t border-border/20 px-4 py-2.5"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1 px-2 text-xs"
-            onClick={() => navigate(`/production-orders/${order.id}`)}
-          >
-            <Eye className="size-3.5" />
-            Ko'rish
-          </Button>
-
-          {canAct && order.status === 'new' && (
-            <>
-              <Button
-                size="sm"
-                className="h-7 flex-1 text-xs bg-amber-500 hover:bg-amber-600 text-white"
-                disabled={isBusy}
-                onClick={() => void transition(order.id, 'in_progress')}
-              >
-                {isBusy ? <Loader2 className="size-3 animate-spin" /> : 'Boshlash'}
-              </Button>
-              {canCreate && (
-                <Button variant="ghost" size="sm" className="size-7 p-0" onClick={onEdit}>
-                  <Pencil className="size-3.5" />
-                </Button>
-              )}
-              <Button
-                variant="ghost"
-                size="sm"
-                className="size-7 p-0 text-muted-foreground hover:text-destructive"
-                disabled={isBusy}
-                onClick={() => void transition(order.id, 'cancelled')}
-              >
-                ✕
-              </Button>
-            </>
-          )}
-
-          {canAct && order.status === 'in_progress' && (
-            <>
-              <Button
-                size="sm"
-                className="h-7 flex-1 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
-                disabled={isBusy}
-                onClick={() => void transition(order.id, 'done')}
-              >
-                {isBusy ? <Loader2 className="size-3 animate-spin" /> : 'Topshirish'}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="size-7 p-0 text-muted-foreground hover:text-destructive"
-                disabled={isBusy}
-                onClick={() => void transition(order.id, 'cancelled')}
-              >
-                ✕
-              </Button>
-            </>
-          )}
-
-          {canCreate && (order.status === 'new' || order.status === 'cancelled') && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="ml-auto size-7 p-0 text-muted-foreground hover:text-destructive"
-              onClick={onDelete}
-            >
-              <Trash2 className="size-3.5" />
-            </Button>
-          )}
-        </div>
-      )}
-
-      {/* Cancelled — just view link */}
-      {isCancelled && (
-        <div
-          className="flex items-center border-t border-border/20 px-4 py-2"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1 px-2 text-xs"
-            onClick={() => navigate(`/production-orders/${order.id}`)}
-          >
-            <Eye className="size-3.5" />
-            Ko'rish
-          </Button>
-          {canCreate && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="ml-auto size-7 p-0 text-muted-foreground hover:text-destructive"
-              onClick={onDelete}
-            >
-              <Trash2 className="size-3.5" />
-            </Button>
-          )}
-        </div>
-      )}
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+    <title>Zayavkalar — ${dateStr}</title>
+    <style>
+      *{box-sizing:border-box;margin:0;padding:0}
+      body{font-family:'Arial',sans-serif;margin:20px;color:#111}
+      h1{font-size:16px;font-weight:700;margin-bottom:4px}
+      .subtitle{color:#6b7280;font-size:12px;margin-bottom:16px}
+      table{border-collapse:collapse;width:100%}
+      @media print{body{margin:10px}@page{size:landscape;margin:10mm}}
+      .footer{margin-top:28px;display:flex;gap:60px;font-size:11px;color:#555}
+      .sig{border-top:1px solid #555;padding-top:4px;min-width:180px}
+    </style>
+  </head><body>
+    <h1>Ishlab chiqarish zayavkalari — ${dateStr}</h1>
+    <p class="subtitle">Jami ${prods.length} ta mahsulot · ${locs.length} ta sex · ${orders.length} ta zayavka</p>
+    <table>
+      <thead>
+        <tr>
+          <th style="${th0Style}">Mahsulot</th>
+          ${headerCols}
+          <th style="${thTotalStyle}">Jami</th>
+        </tr>
+      </thead>
+      <tbody>${bodyRows}</tbody>
+    </table>
+    <div class="footer">
+      <div class="sig">Tuzuvchi: _________________________</div>
+      <div class="sig">Tasdiqladi: _________________________</div>
+      <div class="sig">Sana: ${dateStr}</div>
     </div>
-  );
+    <script>window.onload=function(){window.print()}<\/script>
+  </body></html>`;
+
+  const w = window.open('', '_blank');
+  if (w) { w.document.write(html); w.document.close(); }
 }
 
 // ---------------------------------------------------------------------------
-// SexSection — accordion grouping by location
+// StoreOrdersMatrix — Do'kon zayavkalari matrix view
 // ---------------------------------------------------------------------------
-function SexSection({
-  locationId,
-  locationName,
-  dotColor,
-  orders,
-  ...props
-}: {
-  locationId: number;
+type MatrixProduct = {
+  productId: number;
+  productName: string;
+  byStore: Map<string, number>;
+  totalQty: number;
+};
+
+type MatrixDept = {
+  locationId: number | string;
   locationName: string;
-  dotColor: string;
+  products: MatrixProduct[];
+};
+
+// Returns a stable string key for a "store" (do'kon) column.
+// Prefers target_location_id when set; falls back to requester_location_name.
+function storeKeyOf(o: ProductionOrder): string | null {
+  if (o.target_location_id != null) return `loc:${o.target_location_id}`;
+  if (o.requester_location_name) return `req:${o.requester_location_name}`;
+  return null;
+}
+
+function storeNameOf(o: ProductionOrder): string | null {
+  return o.target_location_name ?? o.requester_location_name ?? null;
+}
+
+function buildMatrix(orders: ProductionOrder[]) {
+  const storeMap = new Map<string, string>();
+  const deptMap = new Map<string, { name: string; prods: Map<string, MatrixProduct> }>();
+
+  for (const o of orders) {
+    if (o.parent_production_order_id != null) continue;
+    const sk = storeKeyOf(o);
+    const sn = storeNameOf(o);
+    if (sk && sn) storeMap.set(sk, sn);
+
+    const deptKey = String(o.location_id);
+    if (!deptMap.has(deptKey)) {
+      deptMap.set(deptKey, { name: o.location_name, prods: new Map() });
+    }
+    const dept = deptMap.get(deptKey)!;
+    const prodKey = String(o.product_id);
+    if (!dept.prods.has(prodKey)) {
+      dept.prods.set(prodKey, {
+        productId: o.product_id,
+        productName: o.product_name,
+        byStore: new Map(),
+        totalQty: 0,
+      });
+    }
+    const prod = dept.prods.get(prodKey)!;
+    if (sk) {
+      prod.byStore.set(sk, (prod.byStore.get(sk) ?? 0) + o.qty);
+    }
+    prod.totalQty += o.qty;
+  }
+
+  const stores = [...storeMap.entries()]
+    .map(([id, name]) => ({ id, name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const depts: MatrixDept[] = [...deptMap.entries()]
+    .map(([locationId, { name, prods }]) => ({
+      locationId,
+      locationName: name,
+      products: [...prods.values()].sort((a, b) => a.productName.localeCompare(b.productName)),
+    }))
+    .sort((a, b) => a.locationName.localeCompare(b.locationName));
+
+  return { stores, depts };
+}
+
+function StoreOrdersMatrix({
+  orders,
+  productById,
+}: {
   orders: ProductionOrder[];
   productById: Map<number, Product>;
-  subOrdersMap: Map<number, ProductionOrder[]>;
-  canActOnRow: (loc: number | null | undefined) => boolean;
-  transition: (id: number, s: 'in_progress' | 'done' | 'cancelled') => Promise<void>;
-  busyId: number | null;
-  canCreate: boolean;
-  onEdit: (o: ProductionOrder) => void;
-  onDelete: (o: ProductionOrder) => void;
-  navigate: (p: string) => void;
 }) {
-  const activeCount = orders.filter(
-    (o) => o.status !== 'done' && o.status !== 'cancelled',
-  ).length;
-  const doneCount = orders.filter((o) => o.status === 'done').length;
-  const defaultOpen =
-    activeCount > 0 || orders.some((o) => isOverdue(o.deadline, o.status));
-  const [open, setOpen] = useState(defaultOpen);
+  const { stores, depts } = useMemo(() => buildMatrix(orders), [orders]);
+  const [skladQty, setSkladQty] = useState<Record<string, string>>({});
 
-  return (
-    <div className="space-y-1">
-      {/* Section divider header */}
-      <div className="flex items-center gap-3 py-1.5">
-        <div className={`size-2.5 shrink-0 rounded-full ${dotColor}`} />
-        <button
-          type="button"
-          onClick={() => setOpen((o) => !o)}
-          className="inline-flex items-center gap-1.5 text-sm font-bold text-foreground hover:text-foreground/80 transition-colors"
-        >
-          {locationName}
-          {open ? (
-            <ChevronDown className="size-3.5 text-muted-foreground" />
-          ) : (
-            <ChevronRight className="size-3.5 text-muted-foreground" />
-          )}
-        </button>
-        <div className="h-px flex-1 bg-border/30" />
-        <span className="text-xs tabular-nums text-muted-foreground">
-          {doneCount}/{orders.length}
-        </span>
-        {activeCount > 0 && (
-          <span className="inline-flex items-center rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold text-amber-700 dark:text-amber-400">
-            {activeCount} aktiv
-          </span>
-        )}
-      </div>
+  const storeOrderCount = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const o of orders) {
+      if (o.parent_production_order_id != null) continue;
+      const sk = storeKeyOf(o);
+      if (!sk) continue;
+      m.set(sk, (m.get(sk) ?? 0) + 1);
+    }
+    return m;
+  }, [orders]);
 
-      {/* Cards */}
-      {open && (
-        <div className="space-y-2 pl-5 pb-3">
-          {orders.map((order) => {
-            const unit = props.productById.get(order.product_id)?.unit ?? '';
-            const subOrders = props.subOrdersMap.get(order.id) ?? [];
-            return (
-              <OrderCard
-                key={order.id}
-                order={order}
-                unit={unit}
-                subOrders={subOrders}
-                productById={props.productById}
-                canActOnRow={props.canActOnRow}
-                transition={props.transition}
-                busyId={props.busyId}
-                canCreate={props.canCreate}
-                onEdit={() => props.onEdit(order)}
-                onDelete={() => props.onDelete(order)}
-                navigate={props.navigate}
-              />
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// KanbanCard  (for production_manager)
-// ---------------------------------------------------------------------------
-function KanbanCard({
-  order,
-  unit,
-  isBusy,
-  canAct,
-  subOrders,
-  onStart,
-  onComplete,
-  onNavigate,
-}: {
-  order: ProductionOrder;
-  unit: string;
-  isBusy: boolean;
-  canAct: boolean;
-  subOrders: ProductionOrder[];
-  onStart: () => void;
-  onComplete: () => void;
-  onNavigate: () => void;
-}) {
-  const overdue = isOverdue(order.deadline, order.status);
-  const doneSubCount = subOrders.filter((s) => s.status === 'done').length;
-  const accentBar =
-    order.status === 'new'
-      ? 'bg-amber-400'
-      : order.status === 'in_progress'
-      ? 'bg-blue-400'
-      : 'bg-emerald-500';
-
-  return (
-    <div
-      className="group relative flex flex-col gap-2 overflow-hidden rounded-xl border border-border/60 bg-card shadow-sm cursor-pointer hover:shadow-md transition-shadow"
-      onClick={onNavigate}
-    >
-      <div className={`h-1 w-full ${accentBar}`} />
-      <div className="flex flex-col gap-2 px-3 pb-3">
-        <div>
-          <p className="text-[11px] text-muted-foreground">#{order.id}</p>
-          <p className="font-semibold text-sm leading-snug">{order.product_name}</p>
-          <p className="text-xs text-muted-foreground tabular-nums">
-            {formatQty(order.qty)} {unit}
-          </p>
-        </div>
-        {order.deadline && (
-          <p className={`text-xs font-medium ${overdue ? 'text-red-500 dark:text-red-400' : 'text-muted-foreground'}`}>
-            {overdue ? '⚠ ' : ''}Muddat: {order.deadline}
-          </p>
-        )}
-        {subOrders.length > 0 && (
-          <div className="flex items-center gap-2">
-            <div className="h-1 flex-1 rounded-full bg-muted/50">
-              <div
-                className="h-1 rounded-full bg-emerald-500"
-                style={{ width: `${(doneSubCount / subOrders.length) * 100}%` }}
-              />
-            </div>
-            <span className="text-[10px] text-muted-foreground tabular-nums">
-              {doneSubCount}/{subOrders.length}
-            </span>
-          </div>
-        )}
-        <div className="flex gap-1.5" onClick={(e) => e.stopPropagation()}>
-          {canAct && order.status === 'new' && (
-            <Button
-              size="sm"
-              className="h-7 flex-1 text-xs bg-amber-500 hover:bg-amber-600 text-white"
-              disabled={isBusy}
-              onClick={onStart}
-            >
-              {isBusy ? <Loader2 className="size-3 animate-spin" /> : 'Boshlash'}
-            </Button>
-          )}
-          {canAct && order.status === 'in_progress' && (
-            <Button
-              size="sm"
-              className="h-7 flex-1 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
-              disabled={isBusy}
-              onClick={onComplete}
-            >
-              {isBusy ? <Loader2 className="size-3 animate-spin" /> : 'Topshirish'}
-            </Button>
-          )}
-          {order.status === 'done' && (
-            <Button variant="outline" size="sm" className="h-7 flex-1 text-xs" onClick={onNavigate}>
-              <Eye className="size-3" />
-              Ko'rish
-            </Button>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// KanbanView (for production_manager)
-// ---------------------------------------------------------------------------
-function KanbanView({
-  rows,
-  productById,
-  canActOnRow,
-  transition,
-  navigate,
-  busyId,
-  subOrdersMap,
-}: {
-  rows: ProductionOrder[];
-  productById: Map<number, Product>;
-  canActOnRow: (locationId: number | null | undefined) => boolean;
-  transition: (id: number, status: 'in_progress' | 'done' | 'cancelled') => Promise<void>;
-  navigate: (path: string) => void;
-  busyId: number | null;
-  subOrdersMap: Map<number, ProductionOrder[]>;
-}) {
-  const [cancelledOpen, setCancelledOpen] = useState(false);
-  const topLevel = rows.filter((r) => r.parent_production_order_id == null);
-  const newOrders = topLevel.filter((r) => r.status === 'new');
-  const inProgress = topLevel.filter((r) => r.status === 'in_progress');
-  const done = topLevel.filter((r) => r.status === 'done');
-  const cancelled = topLevel.filter((r) => r.status === 'cancelled');
-
-  const columns = [
-    { key: 'new', label: 'Boshlash', items: newOrders, color: 'text-amber-600 dark:text-amber-400' },
-    { key: 'in_progress', label: 'Topshirildi', items: inProgress, color: 'text-blue-600 dark:text-blue-400' },
-    { key: 'done', label: 'Qabul qildi', items: done, color: 'text-emerald-600 dark:text-emerald-400' },
-  ] as const;
+  if (depts.length === 0) {
+    return <EmptyState message="Do'kon zayavkalari topilmadi. Zayavkalar manzil (target) bilan yaratilgan bo'lishi kerak." />;
+  }
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        {columns.map((col) => (
-          <div key={col.key} className="flex flex-col gap-3">
-            <div className="flex items-center gap-2">
-              <h3 className={`text-sm font-semibold ${col.color}`}>{col.label}</h3>
-              <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground tabular-nums">
-                {col.items.length}
-              </span>
-            </div>
-            {col.items.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-border/50 p-6 text-center text-xs text-muted-foreground">
-                Bo'sh
+      {/* Store cards */}
+      {stores.length > 0 && (
+        <div className="flex gap-3 overflow-x-auto pb-1">
+          {stores.map((store) => (
+            <div
+              key={store.id}
+              className="min-w-[160px] flex-shrink-0 rounded-2xl border border-border/60 bg-card p-4 shadow-sm space-y-1"
+            >
+              <div className="flex items-center gap-2">
+                <span className="size-2 rounded-full bg-emerald-500" />
+                <span className="text-sm font-bold truncate">{store.name}</span>
               </div>
-            ) : (
-              col.items.map((order) => {
-                const unit = productById.get(order.product_id)?.unit ?? '';
-                return (
-                  <KanbanCard
-                    key={order.id}
-                    order={order}
-                    unit={unit}
-                    isBusy={busyId === order.id}
-                    canAct={canActOnRow(order.location_id)}
-                    subOrders={subOrdersMap.get(order.id) ?? []}
-                    onStart={() => void transition(order.id, 'in_progress')}
-                    onComplete={() => void transition(order.id, 'done')}
-                    onNavigate={() => navigate(`/production-orders/${order.id}`)}
-                  />
-                );
-              })
-            )}
-          </div>
-        ))}
-      </div>
-
-      {cancelled.length > 0 && (
-        <div className="rounded-xl border border-border/40">
-          <button
-            type="button"
-            onClick={() => setCancelledOpen((o) => !o)}
-            className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-muted/20 transition-colors"
-          >
-            {cancelledOpen ? (
-              <ChevronDown className="size-4 text-muted-foreground" />
-            ) : (
-              <ChevronRight className="size-4 text-muted-foreground" />
-            )}
-            <span className="text-muted-foreground">Bekor qilinganlar ({cancelled.length})</span>
-          </button>
-          {cancelledOpen && (
-            <div className="grid grid-cols-1 gap-2 px-4 pb-4 sm:grid-cols-3">
-              {cancelled.map((order) => {
-                const unit = productById.get(order.product_id)?.unit ?? '';
-                return (
-                  <div
-                    key={order.id}
-                    className="flex items-center justify-between gap-2 rounded-lg border border-border/40 bg-muted/10 px-3 py-2 opacity-60 cursor-pointer hover:opacity-80 transition-opacity"
-                    onClick={() => navigate(`/production-orders/${order.id}`)}
-                  >
-                    <div className="min-w-0">
-                      <p className="text-xs text-muted-foreground">#{order.id}</p>
-                      <p className="truncate text-xs font-medium">{order.product_name}</p>
-                      <p className="text-[11px] text-muted-foreground">
-                        {formatQty(order.qty)} {unit}
-                      </p>
-                    </div>
-                  </div>
-                );
-              })}
+              <p className="text-2xl font-bold tabular-nums">{storeOrderCount.get(store.id) ?? 0}</p>
+              <p className="text-xs text-muted-foreground">pozitsiya</p>
+            </div>
+          ))}
+          {stores.length === 0 && (
+            <div className="min-w-[160px] flex-shrink-0 rounded-2xl border border-amber-300/40 bg-amber-50/30 dark:bg-amber-950/10 p-4 shadow-sm">
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                Zayavkalar do'kon manziliga (target) biriktirilmagan
+              </p>
             </div>
           )}
         </div>
       )}
+
+      {/* Department sections */}
+      {depts.map((dept, deptIdx) => {
+        const deptIshlab = dept.products.reduce((sum, prod) => {
+          const key = `${dept.locationId}_${prod.productId}`;
+          const sklad = Number(skladQty[key] ?? 0);
+          return sum + Math.max(0, prod.totalQty - sklad);
+        }, 0);
+
+        return (
+          <div key={dept.locationId} className="overflow-hidden rounded-xl border border-border/50 shadow-sm">
+            <div className="flex items-center gap-3 bg-zinc-900 dark:bg-zinc-800 px-4 py-2.5">
+              <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-zinc-700 text-xs font-bold text-zinc-300">
+                {deptIdx + 1}
+              </span>
+              <span className="text-sm font-bold text-white">{dept.locationName}</span>
+              <span className="text-xs text-zinc-400">{dept.products.length} mahsulot</span>
+              <div className="ml-auto text-xs text-zinc-400">
+                ishlab chiqarish:{' '}
+                <span className="font-bold text-white">{Math.round(deptIshlab)}</span>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border/30 bg-muted/10">
+                    <th className="py-2 pl-4 pr-2 text-left text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      Mahsulot
+                    </th>
+                    {stores.map((s) => (
+                      <th key={s.id} className="px-3 py-2 text-center text-[11px] font-semibold uppercase tracking-wide text-muted-foreground whitespace-nowrap">
+                        {s.name}
+                      </th>
+                    ))}
+                    <th className="px-3 py-2 text-right text-[11px] font-semibold uppercase tracking-wide text-muted-foreground whitespace-nowrap">
+                      So&apos;raldi
+                    </th>
+                    <th className="px-3 py-2 text-center text-[11px] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400 whitespace-nowrap w-44">
+                      Skladdan
+                    </th>
+                    <th className="py-2 pr-4 text-right text-[11px] font-semibold uppercase tracking-wide text-muted-foreground whitespace-nowrap">
+                      Ishlab chiq.
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/20">
+                  {dept.products.map((prod) => {
+                    const key = `${dept.locationId}_${prod.productId}`;
+                    const skladVal = Number(skladQty[key] ?? 0);
+                    const ishlab = Math.max(0, prod.totalQty - skladVal);
+                    const unit = productById.get(prod.productId)?.unit ?? '';
+                    return (
+                      <tr key={prod.productId} className="hover:bg-muted/20 transition-colors">
+                        <td className="py-2.5 pl-4 pr-2 font-semibold whitespace-nowrap">
+                          {prod.productName}
+                        </td>
+                        {stores.map((s) => {
+                          const qty = prod.byStore.get(s.id) ?? 0;
+                          return (
+                            <td key={s.id} className="px-3 py-2.5 text-center tabular-nums">
+                              {qty > 0 ? (
+                                <span className="font-medium">{qty}</span>
+                              ) : (
+                                <span className="text-muted-foreground/25">·</span>
+                              )}
+                            </td>
+                          );
+                        })}
+                        <td className="px-3 py-2.5 text-right font-bold tabular-nums">
+                          {prod.totalQty}
+                          {unit && <span className="ml-1 text-xs font-normal text-muted-foreground">{unit}</span>}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <div className="flex items-center justify-center gap-1.5">
+                            <input
+                              type="number"
+                              min={0}
+                              max={prod.totalQty}
+                              value={skladQty[key] ?? ''}
+                              onChange={(e) =>
+                                setSkladQty((prev) => ({ ...prev, [key]: e.target.value }))
+                              }
+                              placeholder="0"
+                              className="w-16 rounded-md border border-border bg-background px-2 py-1 text-xs text-right tabular-nums focus:border-emerald-500 focus:outline-none"
+                            />
+                            {skladVal > 0 && (
+                              <button
+                                type="button"
+                                className="rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-bold text-white hover:bg-emerald-700 transition-colors whitespace-nowrap"
+                              >
+                                beraman
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                        <td className="py-2.5 pr-4 text-right tabular-nums">
+                          <span className="font-bold text-blue-600 dark:text-blue-400">{ishlab}</span>
+                          {unit && <span className="ml-1 text-xs text-muted-foreground">{unit}</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -795,16 +482,13 @@ function KanbanView({
 export function ProductionOrdersPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { isReadOnly, isOperator, canActOn } = useCanAct();
+  const { isReadOnly, isOperator } = useCanAct();
   const { user } = useAuth();
   const isPm = user?.role === 'pm' || user?.role === 'super_admin';
   const isProdManager = user?.role === 'production_manager';
   const myLocationId = isProdManager ? (user?.location_id ?? null) : null;
   const canCreate = isOperator || isPm;
-  const canActOnRow = (locationId: number | null | undefined) =>
-    isPm || canActOn(locationId);
 
-  // URL-param based initial filter values (from dashboard shortcut links)
   const fromDashboard = searchParams.get('from') === 'dashboard';
   const urlStatus = searchParams.get('status') as ProductionOrderStatus | null;
   const urlLocationId = searchParams.get('location_id');
@@ -820,12 +504,55 @@ export function ProductionOrdersPage() {
   const [showOverdueOnly, setShowOverdueOnly] = useState(urlOverdue);
   const [dateFrom, setDateFrom] = useState(urlFrom);
   const [dateTo, setDateTo] = useState(urlTo);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [draftStatus, setDraftStatus] = useState<ProductionOrderStatus | ''>(urlStatus ?? '');
+  const [draftSelectedSexId, setDraftSelectedSexId] = useState<number | null>(
+    urlLocationId ? Number(urlLocationId) : myLocationId,
+  );
+  const [draftDateFrom, setDraftDateFrom] = useState(urlFrom);
+  const [draftDateTo, setDraftDateTo] = useState(urlTo);
+  const [draftShowOverdue, setDraftShowOverdue] = useState(urlOverdue);
+
+  const filterActiveCount =
+    (status !== '' ? 1 : 0) +
+    (selectedSexId !== null && myLocationId === null ? 1 : 0) +
+    (dateFrom || dateTo ? 1 : 0) +
+    (showOverdueOnly ? 1 : 0);
+
+  function openFilter() {
+    setDraftStatus(status);
+    setDraftSelectedSexId(selectedSexId);
+    setDraftDateFrom(dateFrom);
+    setDraftDateTo(dateTo);
+    setDraftShowOverdue(showOverdueOnly);
+    setFilterOpen(true);
+  }
+  function applyFilter() {
+    setStatus(draftStatus);
+    setSelectedSexId(draftSelectedSexId);
+    setDateFrom(draftDateFrom);
+    setDateTo(draftDateTo);
+    setShowOverdueOnly(draftShowOverdue);
+    setFilterOpen(false);
+  }
+  function clearFilter() {
+    setDraftStatus(''); setStatus('');
+    setDraftSelectedSexId(null); setSelectedSexId(null);
+    setDraftDateFrom(''); setDateFrom('');
+    setDraftDateTo(''); setDateTo('');
+    setDraftShowOverdue(false); setShowOverdueOnly(false);
+    setFilterOpen(false);
+  }
+
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [quickCostOpen, setQuickCostOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<ProductionOrder | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ProductionOrder | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
-  const [busyId, setBusyId] = useState<number | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [telegramBusyId, setTelegramBusyId] = useState<number | null>(null);
+  const [statusBusyId, setStatusBusyId] = useState<number | null>(null);
+  const [markAllBusy, setMarkAllBusy] = useState(false);
+  const [viewMode, setViewMode] = useState<'list' | 'matrix'>('list');
 
   const path = (() => {
     const params = new URLSearchParams();
@@ -845,31 +572,51 @@ export function ProductionOrdersPage() {
     return m;
   }, [products.data]);
 
-  async function transition(
-    orderId: number,
-    nextStatus: 'in_progress' | 'done' | 'cancelled',
-  ): Promise<void> {
-    setActionError(null);
-    setBusyId(orderId);
+  async function sendTelegram(orderId: number) {
+    setTelegramBusyId(orderId);
+    try {
+      await apiRequest(`/api/production-orders/${orderId}/notify`, { method: 'POST' });
+      notify('success', 'Telegram xabari yuborildi!');
+    } catch (err: unknown) {
+      notify('error', err instanceof ApiError ? err.message : "Telegram yuborib bo'lmadi.");
+    } finally {
+      setTelegramBusyId(null);
+    }
+  }
+
+  async function handleStatusDone(orderId: number) {
+    setStatusBusyId(orderId);
     try {
       await apiRequest(`/api/production-orders/${orderId}`, {
         method: 'PATCH',
-        body: { status: nextStatus },
+        body: JSON.stringify({ status: 'done' }),
       });
-      notify('success', `Zayafka holati: ${PRODUCTION_ORDER_STATUS_LABELS[nextStatus]}.`);
-      // Reset status filter so the transitioned order stays visible in the list.
-      setStatus('');
+      notify('success', 'Zayafka tayyor deb belgilandi!');
       refetch();
     } catch (err: unknown) {
-      if (err instanceof ApiError && err.code === 'INSUFFICIENT_STOCK') {
-        setActionError(
-          "BOM komponentlari yetarli emas — avval xom-ashyoni to'ldiring.",
-        );
-      } else {
-        setActionError(err instanceof ApiError ? err.message : "Amalni bajarib bo'lmadi.");
-      }
+      notify('error', err instanceof ApiError ? err.message : "Status o'zgartib bo'lmadi.");
     } finally {
-      setBusyId(null);
+      setStatusBusyId(null);
+    }
+  }
+
+  async function handleMarkAllDone() {
+    const pendingIds = (data ?? [])
+      .filter((r) => r.parent_production_order_id == null && r.status !== 'done' && r.status !== 'cancelled')
+      .map((r) => r.id);
+    if (pendingIds.length === 0) return;
+    setMarkAllBusy(true);
+    try {
+      await apiRequest('/api/production-orders/bulk-done', {
+        method: 'PATCH',
+        body: JSON.stringify({ ids: pendingIds }),
+      });
+      notify('success', `${pendingIds.length} ta zayafka tayyor deb belgilandi!`);
+      refetch();
+    } catch (err: unknown) {
+      notify('error', err instanceof ApiError ? err.message : "Bulk tayyor qilib bo'lmadi.");
+    } finally {
+      setMarkAllBusy(false);
     }
   }
 
@@ -882,7 +629,7 @@ export function ProductionOrdersPage() {
       setDeleteTarget(null);
       refetch();
     } catch (err: unknown) {
-      setActionError(err instanceof ApiError ? err.message : "O'chirib bo'lmadi.");
+      notify('error', err instanceof ApiError ? err.message : "O'chirib bo'lmadi.");
     } finally {
       setIsDeleting(false);
     }
@@ -890,7 +637,6 @@ export function ProductionOrdersPage() {
 
   const rows = data ?? [];
 
-  // Sex chips — for pm/operator (not production_manager)
   const sexChips = useMemo(() => {
     if (myLocationId !== null) return [];
     const seen = new Map<number, string>();
@@ -914,69 +660,66 @@ export function ProductionOrdersPage() {
       )
     : baseRows;
 
-  const subOrdersMap = useMemo(() => {
-    const m = new Map<number, ProductionOrder[]>();
+  // Only top-level orders in the table (sub-orders visible on detail page)
+  const topLevelRows = filteredRows.filter((r) => r.parent_production_order_id == null);
+
+  // Sub-order count per parent (for the table badge)
+  const subCountMap = useMemo(() => {
+    const m = new Map<number, number>();
     for (const r of filteredRows) {
       if (r.parent_production_order_id != null) {
-        const list = m.get(r.parent_production_order_id) ?? [];
-        list.push(r);
-        m.set(r.parent_production_order_id, list);
+        m.set(r.parent_production_order_id, (m.get(r.parent_production_order_id) ?? 0) + 1);
       }
     }
     return m;
   }, [filteredRows]);
 
-  // Group by location for non-production_manager view.
-  // When no sex filter: only top-level orders are grouped (sub-orders appear nested inside parent cards).
-  // When a sex is selected: all orders (incl. sub-orders) are shown so workers see their full task list.
-  // Exception: sub-orders whose parent is NOT in filteredRows (e.g. status-filtered view where parent
-  // has a different status) are shown as standalone items so they don't disappear from the list.
-  const sexGroups = useMemo(() => {
-    const map = new Map<number, { locationName: string; orders: ProductionOrder[] }>();
-    const filteredIds = new Set(filteredRows.map((r) => r.id));
-    const rowsToGroup =
-      effectiveSexId !== null
-        ? filteredRows
-        : filteredRows.filter(
-            (r) =>
-              r.parent_production_order_id == null ||
-              !filteredIds.has(r.parent_production_order_id),
-          );
-    for (const row of rowsToGroup) {
-      const existing = map.get(row.location_id);
-      if (existing) {
-        existing.orders.push(row);
-      } else {
-        map.set(row.location_id, { locationName: row.location_name, orders: [row] });
-      }
-    }
-    return [...map.entries()]
-      .map(([id, { locationName, orders }]) => ({ id, locationName, orders }))
-      .sort((a, b) => a.locationName.localeCompare(b.locationName));
-  }, [filteredRows, effectiveSexId]);
-
-  const sharedCardProps = {
-    productById,
-    subOrdersMap,
-    canActOnRow,
-    transition,
-    busyId,
-    canCreate,
-    onEdit: (o: ProductionOrder) => setEditTarget(o),
-    onDelete: (o: ProductionOrder) => setDeleteTarget(o),
-    navigate: (p: string) => navigate(p),
-  };
-
   return (
     <div className="mx-auto max-w-[90rem] space-y-5">
       <PageHeader
         title="Ishlab chiqarish zayafkalari"
-        description="Zayafkalar holati va zagatovkalar."
+        description="Zayafkalar va omborga ta'sir ro'yxati."
         action={
           <div className="flex items-center gap-2">
             {isReadOnly && !canCreate && (
               <Badge variant="secondary">Faqat o'qish</Badge>
             )}
+            {(isPm || isProdManager) && (
+              <Button variant="outline" onClick={() => navigate('/production-cost-report')}>
+                Narx xisoboti
+              </Button>
+            )}
+            {topLevelRows.length > 0 && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  const today = new Date().toISOString().slice(0, 10);
+                  openOrdersListPrint(topLevelRows, today);
+                }}
+              >
+                <Printer className="size-4" />
+                Chop etish
+              </Button>
+            )}
+            {(canCreate || isPm || isProdManager) &&
+              topLevelRows.some((r) => r.status !== 'done' && r.status !== 'cancelled') && (
+                <Button
+                  variant="outline"
+                  className="border-emerald-500/40 text-emerald-700 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-950/40"
+                  disabled={markAllBusy}
+                  onClick={() => void handleMarkAllDone()}
+                >
+                  {markAllBusy ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="size-4" />
+                  )}
+                  Barchasini tayyor qilish
+                </Button>
+              )}
+            <Button variant="outline" onClick={() => setQuickCostOpen(true)}>
+              Narx hisoblash
+            </Button>
             {canCreate && (
               <Button onClick={() => setDialogOpen(true)}>
                 <Plus className="size-4" />
@@ -1012,162 +755,342 @@ export function ProductionOrdersPage() {
       )}
 
       {/* Filter bar */}
-      <div className="space-y-2">
-        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/60 bg-card/40 px-4 py-2.5">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-xs text-muted-foreground mr-1">Holat:</span>
-            {/* "Boshlash" = default all-orders view (no status filter) */}
+      <div className="flex items-center justify-between rounded-xl border border-border/60 bg-card/40 px-4 py-2.5 gap-3">
+        <span className="text-sm text-muted-foreground shrink-0">
+          {topLevelRows.length} ta zayafka
+          {filterActiveCount > 0 && <span className="ml-2 text-xs text-primary">{filterActiveCount} ta filter faol</span>}
+        </span>
+        <div className="flex items-center gap-2 ml-auto">
+          <div className="flex items-center rounded-lg border border-border/60 overflow-hidden text-xs">
             <button
-              onClick={() => setStatus('')}
-              className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                status === ''
+              type="button"
+              onClick={() => setViewMode('list')}
+              className={`px-3 py-1.5 font-medium transition-colors ${
+                viewMode === 'list'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-muted'
+              }`}
+            >
+              Ro'yxat
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('matrix')}
+              className={`px-3 py-1.5 font-medium transition-colors ${
+                viewMode === 'matrix'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-muted'
+              }`}
+            >
+              Do'kon zayavkalari
+            </button>
+          </div>
+          <FilterTrigger onClick={openFilter} activeCount={filterActiveCount} />
+        </div>
+      </div>
+
+      <FilterSheet
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilter}
+        onClear={clearFilter}
+        activeCount={filterActiveCount}
+      >
+        <FilterField label="Holat">
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              type="button"
+              onClick={() => setDraftStatus('')}
+              className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                draftStatus === ''
                   ? 'bg-primary text-primary-foreground'
                   : 'bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground'
               }`}
             >
-              Boshlash
+              Barchasi
             </button>
-            {/* "Topshirildi" and "Qabul qildi" filter by their statuses; "new" removed since Boshlash covers all */}
-            {PRODUCTION_ORDER_STATUS_OPTIONS.filter(
-              (o) => o.value !== 'cancelled' && o.value !== 'new',
-            ).map((o) => (
+            {(['new', 'in_progress', 'done', 'cancelled'] as const).map((val) => (
               <button
-                key={o.value}
-                onClick={() =>
-                  setStatus(status === o.value ? '' : (o.value as ProductionOrderStatus))
-                }
-                className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                  status === o.value
+                key={val}
+                type="button"
+                onClick={() => setDraftStatus(draftStatus === val ? '' : val)}
+                className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                  draftStatus === val
                     ? 'bg-primary text-primary-foreground'
                     : 'bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground'
                 }`}
               >
-                {o.label}
+                {PRODUCTION_ORDER_STATUS_LABELS[val]}
               </button>
             ))}
           </div>
-          <div className="ml-auto flex items-center gap-1.5">
-            <input
-              type="date"
-              value={dateFrom}
-              onChange={(e) => setDateFrom(e.target.value)}
-              className="h-7 rounded-lg border border-border bg-background px-2 text-xs"
-            />
-            <span className="text-xs text-muted-foreground">—</span>
-            <input
-              type="date"
-              value={dateTo}
-              onChange={(e) => setDateTo(e.target.value)}
-              className="h-7 rounded-lg border border-border bg-background px-2 text-xs"
-            />
-            {(dateFrom || dateTo) && (
+        </FilterField>
+
+        {sexChips.length > 1 && myLocationId === null && (
+          <FilterField label="Sex (bo'lim)">
+            <div className="flex flex-col gap-1.5">
               <button
-                onClick={() => { setDateFrom(''); setDateTo(''); }}
-                className="text-xs text-muted-foreground hover:text-foreground"
+                type="button"
+                onClick={() => setDraftSelectedSexId(null)}
+                className={`w-full rounded-lg border px-3 py-2 text-sm font-medium text-left transition-colors ${
+                  draftSelectedSexId === null
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border bg-background text-muted-foreground hover:bg-muted'
+                }`}
               >
-                ✕
+                Barchasi ({rows.filter((r) => r.parent_production_order_id == null).length})
               </button>
-            )}
-          </div>
-        </div>
-
-        {/* Sex chips — pm/operator only */}
-        {sexChips.length > 1 && (
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-xs text-muted-foreground mr-1">Sex:</span>
-            <button
-              onClick={() => setSelectedSexId(null)}
-              className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                selectedSexId === null
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground'
-              }`}
-            >
-              Barchasi ({rows.length})
-            </button>
-            {sexChips.map((chip, idx) => {
-              const count = rows.filter((r) => r.location_id === chip.id).length;
-              const dotCls = getDotColor(idx);
-              return (
-                <button
-                  key={chip.id}
-                  onClick={() =>
-                    setSelectedSexId(selectedSexId === chip.id ? null : chip.id)
-                  }
-                  className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                    selectedSexId === chip.id
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground'
-                  }`}
-                >
-                  <span className={`size-1.5 rounded-full ${selectedSexId === chip.id ? 'bg-primary-foreground' : dotCls}`} />
-                  {chip.name} ({count})
-                </button>
-              );
-            })}
-          </div>
+              {sexChips.map((chip) => {
+                const count = rows.filter((r) => r.location_id === chip.id && r.parent_production_order_id == null).length;
+                return (
+                  <button
+                    key={chip.id}
+                    type="button"
+                    onClick={() => setDraftSelectedSexId(draftSelectedSexId === chip.id ? null : chip.id)}
+                    className={`w-full rounded-lg border px-3 py-2 text-sm font-medium text-left transition-colors ${
+                      draftSelectedSexId === chip.id
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-border bg-background text-muted-foreground hover:bg-muted'
+                    }`}
+                  >
+                    {chip.name} ({count})
+                  </button>
+                );
+              })}
+            </div>
+          </FilterField>
         )}
 
-        {/* production_manager locked badge */}
-        {myLocationId !== null && (
+        <FilterField label="Sana oraligi">
           <div className="flex items-center gap-2">
-            <span className="inline-flex items-center gap-1 rounded-full bg-primary/15 px-3 py-1 text-xs font-medium text-primary">
-              {rows.find((r) => r.location_id === myLocationId)?.location_name ??
-                `Sex #${myLocationId}`}{' '}
-              — faqat mening sexim
-            </span>
+            <input
+              type="date"
+              value={draftDateFrom}
+              onChange={(e) => setDraftDateFrom(e.target.value)}
+              className="flex-1 h-8 rounded-lg border border-border bg-background px-2 text-sm"
+            />
+            <span className="text-xs text-muted-foreground shrink-0">—</span>
+            <input
+              type="date"
+              value={draftDateTo}
+              onChange={(e) => setDraftDateTo(e.target.value)}
+              className="flex-1 h-8 rounded-lg border border-border bg-background px-2 text-sm"
+            />
           </div>
-        )}
-      </div>
+        </FilterField>
 
-      {actionError && (
-        <p className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-2.5 text-sm text-destructive flex items-center gap-2">
-          <AlertCircle className="size-4 shrink-0" />
-          {actionError}
-        </p>
+        <FilterField label="Muddat">
+          <button
+            type="button"
+            onClick={() => setDraftShowOverdue((v) => !v)}
+            className={`w-full flex items-center justify-between rounded-lg border px-3 py-2.5 text-sm font-medium transition-colors ${
+              draftShowOverdue
+                ? 'border-destructive bg-destructive/10 text-destructive'
+                : 'border-border bg-background text-muted-foreground hover:bg-muted'
+            }`}
+          >
+            <span>Muddati o'tganlar</span>
+            <span className={`size-4 rounded-sm border-2 flex items-center justify-center ${draftShowOverdue ? 'border-destructive bg-destructive' : 'border-muted-foreground'}`}>
+              {draftShowOverdue && <span className="text-white text-[10px] font-bold leading-none">✓</span>}
+            </span>
+          </button>
+        </FilterField>
+      </FilterSheet>
+
+
+      {myLocationId !== null && (
+        <div className="flex items-center gap-2">
+          <span className="inline-flex items-center gap-1 rounded-full bg-primary/15 px-3 py-1 text-xs font-medium text-primary">
+            {rows.find((r) => r.location_id === myLocationId)?.location_name ?? `Sex #${myLocationId}`}{' '}
+            — faqat mening sexim
+          </span>
+        </div>
       )}
 
-      {/* Loading / error states */}
+      {/* Loading / error */}
       {isLoading && <LoadingState />}
       {!isLoading && error && <ErrorState message={error} onRetry={refetch} />}
 
-      {!isLoading && !error && filteredRows.length === 0 && (
+      {!isLoading && !error && topLevelRows.length === 0 && (
         <EmptyState message="Zayafkalar topilmadi." />
       )}
 
-      {!isLoading && !error && filteredRows.length > 0 && (
+      {!isLoading && !error && topLevelRows.length > 0 && (
         <>
-          {/* PipelineStat — always shown */}
           <PipelineStat orders={filteredRows} />
 
-          {/* Production manager — Kanban */}
-          {isProdManager ? (
-            <KanbanView
-              rows={filteredRows}
-              productById={productById}
-              canActOnRow={canActOnRow}
-              transition={transition}
-              navigate={navigate}
-              busyId={busyId}
-              subOrdersMap={subOrdersMap}
-            />
-          ) : (
-            /* PM / Admin — grouped by sex with accordion */
-            <div className="space-y-4">
-              {sexGroups.map((group, idx) => (
-                <SexSection
-                  key={group.id}
-                  locationId={group.id}
-                  locationName={group.locationName}
-                  dotColor={getDotColor(idx)}
-                  orders={group.orders}
-                  {...sharedCardProps}
-                />
-              ))}
+          {/* Matrix view */}
+          {viewMode === 'matrix' && (
+            <StoreOrdersMatrix orders={filteredRows} productById={productById} />
+          )}
+
+          {/* Table (list view) */}
+          {viewMode === 'list' && (
+          <div className="overflow-hidden rounded-2xl border border-border/50 bg-card shadow-sm">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border/40 bg-muted/30 text-left text-xs text-muted-foreground">
+                    <th className="px-4 py-3 font-medium">#</th>
+                    <th className="px-4 py-3 font-medium">Mahsulot</th>
+                    <th className="px-4 py-3 font-medium text-right">Miqdor</th>
+                    <th className="px-4 py-3 font-medium">Bo&apos;g&apos;in</th>
+                    <th className="px-4 py-3 font-medium">Holat</th>
+                    <th className="px-4 py-3 font-medium">Muddat</th>
+                    <th className="px-4 py-3 font-medium text-right">Amallar</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/30">
+                  {topLevelRows.map((order) => {
+                    const unit = productById.get(order.product_id)?.unit ?? '';
+                    const overdue = isOverdue(order.deadline, order.status);
+                    const dotClass = STATUS_DOT[order.status] ?? 'bg-muted';
+                    const subCount = subCountMap.get(order.id) ?? 0;
+                    const isTgBusy = telegramBusyId === order.id;
+                    const isStatusBusy = statusBusyId === order.id;
+                    const canMarkDone =
+                      (canCreate || isPm || isProdManager) &&
+                      (order.status === 'new' || order.status === 'in_progress');
+
+                    return (
+                      <tr
+                        key={order.id}
+                        className="hover:bg-muted/20 transition-colors cursor-pointer"
+                        onClick={() => navigate(`/production-orders/${order.id}`)}
+                      >
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <span className="font-mono text-xs text-muted-foreground">#{order.id}</span>
+                          {subCount > 0 && (
+                            <span className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                              +{subCount}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 max-w-[220px]">
+                          <p className="font-medium truncate">{order.product_name}</p>
+                          {order.note && (
+                            <p className="text-[11px] text-muted-foreground truncate">{order.note}</p>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-right tabular-nums whitespace-nowrap">
+                          <span className="font-semibold">{formatQty(order.qty)}</span>
+                          <span className="ml-1 text-xs text-muted-foreground">{unit}</span>
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
+                          {order.location_name}
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <span className="inline-flex items-center gap-1.5">
+                            <span className={`size-2 shrink-0 rounded-full ${dotClass}`} />
+                            <span className="text-xs">
+                              {PRODUCTION_ORDER_STATUS_LABELS[order.status] ?? order.status}
+                            </span>
+                          </span>
+                        </td>
+                        <td
+                          className={`px-4 py-3 text-xs whitespace-nowrap ${
+                            overdue ? 'text-red-500 dark:text-red-400 font-semibold' : 'text-muted-foreground'
+                          }`}
+                        >
+                          {order.deadline ? (
+                            <>
+                              {overdue && '⚠ '}
+                              {order.deadline}
+                            </>
+                          ) : (
+                            <span className="text-muted-foreground/40">—</span>
+                          )}
+                        </td>
+                        <td
+                          className="px-4 py-3"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <div className="flex items-center justify-end gap-0.5">
+                            {canMarkDone && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="size-7 p-0 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
+                                title="Tayyor deb belgilash"
+                                disabled={isStatusBusy || markAllBusy}
+                                onClick={() => void handleStatusDone(order.id)}
+                              >
+                                {isStatusBusy ? (
+                                  <Loader2 className="size-3.5 animate-spin" />
+                                ) : (
+                                  <CheckCircle2 className="size-3.5" />
+                                )}
+                              </Button>
+                            )}
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="size-7 p-0"
+                              title="Ko'rish"
+                              onClick={() => navigate(`/production-orders/${order.id}`)}
+                            >
+                              <Eye className="size-3.5" />
+                            </Button>
+                            {canCreate && (order.status === 'new') && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="size-7 p-0 text-muted-foreground hover:text-foreground"
+                                title="Tahrirlash"
+                                onClick={() => setEditTarget(order)}
+                              >
+                                <Pencil className="size-3.5" />
+                              </Button>
+                            )}
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="size-7 p-0 text-sky-500 hover:text-sky-600"
+                              title="Telegramga yuborish"
+                              disabled={isTgBusy}
+                              onClick={() => void sendTelegram(order.id)}
+                            >
+                              {isTgBusy ? (
+                                <Loader2 className="size-3.5 animate-spin" />
+                              ) : (
+                                <Send className="size-3.5" />
+                              )}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="size-7 p-0"
+                              title="Chop etish / PDF"
+                              onClick={() => openPrintWindow(order, unit)}
+                            >
+                              <Printer className="size-3.5" />
+                            </Button>
+                            {canCreate && (isPm || order.status === 'new' || order.status === 'cancelled') && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="size-7 p-0 text-muted-foreground hover:text-destructive"
+                                title="O'chirish"
+                                onClick={() => setDeleteTarget(order)}
+                              >
+                                <Trash2 className="size-3.5" />
+                              </Button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
+          </div>
           )}
         </>
       )}
+
+      {/* Quick cost calculator dialog */}
+      <QuickCostDialog open={quickCostOpen} onClose={() => setQuickCostOpen(false)} />
 
       {/* Dialogs */}
       {canCreate && (

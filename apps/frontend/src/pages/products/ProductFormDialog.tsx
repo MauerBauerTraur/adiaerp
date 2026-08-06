@@ -67,7 +67,7 @@ export function ProductFormDialog({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const showProductionLocation = (form.type === 'semi' || form.type === 'finished');
+  const showProductionLocation = (form.type === 'semi' || form.type === 'finished' || form.type === 'gp');
   const productionLocsQuery = useApiQuery<Location[]>(
     open && showProductionLocation ? '/api/locations?type=production' : null,
   );

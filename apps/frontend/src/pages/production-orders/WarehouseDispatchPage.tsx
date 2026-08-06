@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   Loader2,
   PackageCheck,
+  Printer,
   Send,
   Truck,
 } from 'lucide-react';
@@ -84,43 +86,14 @@ function groupByProduct(items: ProductionDispatch[]): ProductGroup[] {
   return [...map.values()].sort((a, b) => a.productName.localeCompare(b.productName));
 }
 
-// ---------------------------------------------------------------------------
-// StatusChip — dot + label, minimal
-// ---------------------------------------------------------------------------
 type StatusKey = ProductionDispatch['status'] | 'mixed';
 
-const STATUS_CFG: Record<StatusKey, { dot: string; text: string; label: string }> = {
-  pending: {
-    dot: 'bg-amber-400',
-    text: 'text-amber-600 dark:text-amber-400',
-    label: 'Kutilmoqda',
-  },
-  dispatched: {
-    dot: 'bg-blue-400',
-    text: 'text-blue-600 dark:text-blue-400',
-    label: 'Berildi',
-  },
-  received: {
-    dot: 'bg-emerald-500',
-    text: 'text-emerald-600 dark:text-emerald-400',
-    label: 'Qabul qilindi',
-  },
-  mixed: {
-    dot: 'bg-violet-400',
-    text: 'text-violet-600 dark:text-violet-400',
-    label: 'Aralash',
-  },
+const STATUS_CFG: Record<StatusKey, { label: string }> = {
+  pending:    { label: 'Kutilmoqda' },
+  dispatched: { label: 'Berildi' },
+  received:   { label: 'Qabul qilindi' },
+  mixed:      { label: 'Aralash' },
 };
-
-function StatusChip({ status }: { status: StatusKey }) {
-  const cfg = STATUS_CFG[status] ?? STATUS_CFG.mixed;
-  return (
-    <span className={`inline-flex items-center gap-1.5 text-xs font-medium ${cfg.text}`}>
-      <span className={`size-1.5 shrink-0 rounded-full ${cfg.dot}`} />
-      {cfg.label}
-    </span>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // PipelineStat — segmented bar dashboard card (clickable status filter)
@@ -131,10 +104,12 @@ function PipelineStat({
   items,
   statusFilter,
   onStatusFilter,
+  dateLabel,
 }: {
   items: ProductionDispatch[];
   statusFilter: StatusFilter;
   onStatusFilter: (s: StatusFilter) => void;
+  dateLabel?: string;
 }) {
   const pending    = items.filter((i) => i.status === 'pending').length;
   const dispatched = items.filter((i) => i.status === 'dispatched').length;
@@ -159,7 +134,7 @@ function PipelineStat({
     <div className="rounded-2xl border border-border/50 bg-card p-5 shadow-sm space-y-4">
       <div className="flex items-center justify-between">
         <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          Bugungi holat
+          {dateLabel ?? 'Bugungi holat'}
         </p>
         <span className="text-sm font-bold tabular-nums">{total} ta pozitsiya</span>
       </div>
@@ -237,6 +212,223 @@ function PipelineStat({
 }
 
 // ---------------------------------------------------------------------------
+// Global print — otdel bo'yicha: xomashyo + ishlab chiqarish + tushum
+// ---------------------------------------------------------------------------
+type OrderInfo = { id: number; product_id: number; product_name: string; qty: number; unit: string; location_id: number | null; location_name: string | null; product_type: string; production_cost: number | null; target_location_name: string | null; parent_production_order_id: number | null; parent_product_name: string | null; parent_unit: string | null; parent_qty: number | null; parent_production_cost: number | null; grandparent_production_order_id: number | null; grandparent_product_name: string | null; grandparent_unit: string | null; grandparent_qty: number | null; grandparent_production_cost: number | null };
+
+async function openGlobalPrint(
+  items: ProductionDispatch[],
+  dateStr: string,
+  allOrders: OrderInfo[],
+) {
+  function fmtN(n: number | null | undefined) {
+    if (n == null) return '—';
+    return n % 1 === 0 ? String(n) : n.toFixed(3).replace(/\.?0+$/, '');
+  }
+  function fmtMoney(n: number | null | undefined) {
+    if (n == null || n === 0) return '—';
+    return n.toLocaleString('uz-UZ') + " so'm";
+  }
+
+  // Pre-fetch production_cost by product name (product_id may be undefined due to BIGINT serialisation quirk)
+  const costByName = new Map<string, number | null>();
+  const hasNullGpCost = allOrders.some(
+    o => (o.product_type === 'gp' || o.product_type === 'finished') && o.production_cost == null,
+  );
+  if (hasNullGpCost) {
+    try {
+      const allProds = await apiRequest<{ name: string; production_cost: number | null }[]>('/api/products');
+      for (const prod of allProds) costByName.set(prod.name, prod.production_cost);
+    } catch { /* ignore */ }
+  }
+  function getGpCost(item: { product_name: string; production_cost: number | null }): number | null {
+    if (item.production_cost != null) return item.production_cost;
+    const fetched = costByName.get(item.product_name);
+    return fetched !== undefined ? fetched : null;
+  }
+
+  // Build id → order map for fast lookup
+  const ordersById = new Map(allOrders.map(o => [o.id, o]));
+
+  // Group dispatch items by to_location (sex), tracking referenced production_order_ids
+  type SexEntry = { id: number | null; name: string; materials: Map<string, { unit: string; total: number }>; orderIds: Set<number> };
+  const sexMap = new Map<string, SexEntry>();
+  for (const item of items) {
+    const key = String(item.to_location_id ?? '__null__');
+    const name = item.to_location_name ?? "Noma'lum sex";
+    if (!sexMap.has(key)) sexMap.set(key, { id: item.to_location_id ?? null, name, materials: new Map(), orderIds: new Set() });
+    const sex = sexMap.get(key)!;
+    sex.orderIds.add(item.production_order_id);
+    const p = sex.materials.get(item.product_name);
+    if (!p) sex.materials.set(item.product_name, { unit: item.product_unit, total: item.qty_needed });
+    else p.total += item.qty_needed;
+  }
+  const sexes = [...sexMap.values()].sort((a, b) => a.name.localeCompare(b.name));
+
+  const thS = 'padding:6px 8px;border:1px solid #ddd;background:#f0f0f0;font-size:11px;text-align:left;';
+  const thSR = thS + 'text-align:right;';
+  const tdS = 'padding:5px 8px;border:1px solid #ddd;font-size:12px;';
+  const tdSR = tdS + 'text-align:right;font-variant-numeric:tabular-nums;';
+
+  const sections = sexes.map(sex => {
+    // --- Xomashyo section ---
+    const matRows = [...sex.materials.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([name, m]) => `<tr>
+        <td style="${tdS}">${name}</td>
+        <td style="${tdSR}">${fmtN(m.total)}</td>
+        <td style="${tdS}">${m.unit}</td>
+        <td style="padding:5px 8px;border:1px solid #ddd;text-align:center;">&#9633;</td>
+      </tr>`).join('');
+
+    const xomashyoSection = `
+      <p style="margin:10px 0 4px;font-size:11px;font-weight:700;text-transform:uppercase;color:#555;letter-spacing:.5px;">
+        Beriladigan xomashyo
+      </p>
+      <table style="width:100%;border-collapse:collapse;margin-bottom:10px">
+        <thead><tr>
+          <th style="${thS}">Xomashyo</th>
+          <th style="${thSR}">Miqdor</th>
+          <th style="${thS}">Birlik</th>
+          <th style="padding:6px 8px;border:1px solid #ddd;background:#f0f0f0;font-size:11px;text-align:center;">Berildi</th>
+        </tr></thead>
+        <tbody>${matRows}</tbody>
+      </table>`;
+
+    // Split orders into zagotovkas and GP (final) products.
+    // Traverse full chain (ordersById) to find root GP for multi-level hierarchies.
+    function glGetRootGP(startId: number): { id: number; product_id: number | null; product_name: string; qty: number; unit: string; production_cost: number | null } {
+      let cur = ordersById.get(startId);
+      if (!cur) return { id: startId, product_id: null, product_name: '?', qty: 0, unit: '', production_cost: null };
+      const visited = new Set<number>();
+      while (cur.parent_production_order_id != null && !visited.has(cur.parent_production_order_id)) {
+        visited.add(cur.id);
+        const par = ordersById.get(cur.parent_production_order_id);
+        if (!par) {
+          if (cur.grandparent_production_order_id != null && cur.grandparent_product_name) {
+            return { id: cur.grandparent_production_order_id, product_id: null, product_name: cur.grandparent_product_name, qty: cur.grandparent_qty ?? cur.parent_qty ?? cur.qty, unit: cur.grandparent_unit ?? cur.parent_unit ?? cur.unit ?? '', production_cost: cur.grandparent_production_cost ?? cur.parent_production_cost ?? cur.production_cost };
+          }
+          return { id: cur.parent_production_order_id, product_id: null, product_name: cur.parent_product_name ?? cur.product_name, qty: cur.parent_qty ?? cur.qty, unit: cur.parent_unit ?? cur.unit ?? '', production_cost: cur.parent_production_cost ?? cur.production_cost };
+        }
+        cur = par;
+      }
+      return { id: cur.id, product_id: cur.product_id, product_name: cur.product_name, qty: cur.qty, unit: cur.unit ?? '', production_cost: cur.production_cost };
+    }
+    const glZagItems: { product_name: string; qty: number; unit: string }[] = [];
+    const glGpByName = new Map<string, { product_id: number | null; product_name: string; qty: number; unit: string; production_cost: number | null }>();
+    const seenGlRootIds = new Set<number>();
+    for (const ordId of sex.orderIds) {
+      const o = ordersById.get(ordId);
+      if (!o) continue;
+      if (o.product_type === 'semi') {
+        glZagItems.push({ product_name: o.product_name, qty: o.qty, unit: o.unit ?? '' });
+        if (o.parent_production_order_id != null) {
+          const root = glGetRootGP(o.parent_production_order_id);
+          if (!seenGlRootIds.has(root.id)) {
+            seenGlRootIds.add(root.id);
+            glGpByName.set(root.product_name, root);
+          }
+        }
+      } else {
+        const existing = glGpByName.get(o.product_name);
+        if (existing) { existing.qty += o.qty; }
+        else { glGpByName.set(o.product_name, { product_id: o.product_id, product_name: o.product_name, qty: o.qty, unit: o.unit ?? '', production_cost: o.production_cost }); }
+      }
+    }
+    // If semi items found but no GP resolved via parent chain, look for GP orders at this location
+    if (glZagItems.length > 0) {
+      for (const o of ordersById.values()) {
+        if (o.location_name === sex.name && (o.product_type === 'gp' || o.product_type === 'finished') && !glGpByName.has(o.product_name)) {
+          glGpByName.set(o.product_name, { product_id: o.product_id, product_name: o.product_name, qty: o.qty, unit: o.unit ?? '', production_cost: o.production_cost });
+        }
+      }
+    }
+    const glGpItems = [...glGpByName.values()];
+
+    let zagSection = '';
+    if (glZagItems.length > 0) {
+      const zagRows = glZagItems.map(z => `<tr>
+        <td style="${tdS}">${z.product_name}</td>
+        <td style="${tdSR}">${fmtN(z.qty)} ${z.unit}</td>
+        <td style="padding:5px 8px;border:1px solid #ddd;text-align:center">&#9633;</td>
+      </tr>`).join('');
+      zagSection = `
+        <p style="margin:14px 0 4px;font-size:11px;font-weight:700;text-transform:uppercase;color:#555;letter-spacing:.5px;">Zagotovkalar</p>
+        <table style="width:100%;border-collapse:collapse;margin-bottom:10px">
+          <thead><tr>
+            <th style="${thS}">Zagotovka</th>
+            <th style="${thSR}">Miqdor</th>
+            <th style="padding:6px 8px;border:1px solid #ddd;background:#f0f0f0;font-size:11px;text-align:center;">Tayyor</th>
+          </tr></thead>
+          <tbody>${zagRows}</tbody>
+        </table>`;
+    }
+
+    let gpSection = '';
+    if (glGpItems.length > 0) {
+      const gpRows = glGpItems.map(o => { const c = getGpCost(o); return `<tr>
+        <td style="${tdS}">${o.product_name}</td>
+        <td style="${tdSR}">${fmtN(o.qty)} ${o.unit}</td>
+        <td style="${tdSR}">${c != null ? fmtMoney(c) : '—'}</td>
+        <td style="${tdSR}">${c != null ? fmtMoney(o.qty * c) : '—'}</td>
+      </tr>`; }).join('');
+      const glTotalCost = glGpItems.reduce((s, o) => { const c = getGpCost(o); return s + (c != null ? o.qty * c : 0); }, 0);
+      const glHasCost = glGpItems.some(o => getGpCost(o) != null);
+      const gpTotalRow = `<tr style="background:#fef9f0;font-weight:700">
+        <td style="${tdS}font-weight:700" colspan="3">JAMI</td>
+        <td style="${tdSR}font-weight:700;color:#d97706">${glHasCost ? fmtMoney(glTotalCost) : '—'}</td>
+      </tr>`;
+      gpSection = `
+        <p style="margin:14px 0 4px;font-size:11px;font-weight:700;text-transform:uppercase;color:#555;letter-spacing:.5px;">Tayyor mahsulot (Г/П)</p>
+        <table style="width:100%;border-collapse:collapse;margin-bottom:10px">
+          <thead><tr>
+            <th style="${thS}">Mahsulot</th>
+            <th style="${thSR}">Miqdor</th>
+            <th style="${thSR}">Narx/birlik</th>
+            <th style="${thSR}">Jami summa</th>
+          </tr></thead>
+          <tbody>${gpRows}${gpTotalRow}</tbody>
+        </table>
+        ${glHasCost ? `<div style="background:#fef9f0;border:1px solid #fed7aa;border-radius:6px;padding:8px 12px;display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <span style="font-size:12px;color:#92400e;font-weight:600">Jami ishlab chiqarish narxi:</span>
+          <span style="font-size:15px;font-weight:700;color:#d97706">${fmtMoney(glTotalCost)}</span>
+        </div>` : ''}`;
+    }
+
+    return `<div style="page-break-inside:avoid;margin-bottom:20px;border:1px solid #e5e7eb;border-radius:8px;padding:12px 14px">
+      <h3 style="margin:0 0 10px;font-size:14px;font-weight:700;border-bottom:2px solid #333;padding-bottom:6px">${sex.name}</h3>
+      ${xomashyoSection}${zagSection}${gpSection}
+    </div>`;
+  }).join('');
+
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+    <title>Xomashyo berish — ${dateStr}</title>
+    <style>
+      *{box-sizing:border-box;margin:0;padding:0}
+      body{font-family:Arial,sans-serif;margin:20px;color:#111;font-size:13px}
+      h1{font-size:17px;font-weight:700;margin-bottom:4px}
+      .subtitle{color:#6b7280;font-size:12px;margin-bottom:16px}
+      @media print{@page{margin:10mm}body{margin:10px}}
+      .footer{margin-top:24px;display:flex;gap:60px;font-size:11px;color:#555}
+      .sig{border-top:1px solid #555;padding-top:4px;min-width:180px}
+    </style>
+  </head><body>
+    <h1>Xomashyo berish — ${dateStr}</h1>
+    <p class="subtitle">Jami ${sexes.length} ta sex</p>
+    ${sections}
+    <div class="footer">
+      <div class="sig">Berdi: _________________________</div>
+      <div class="sig">Qabul qildi: _________________________</div>
+      <div class="sig">Sana: ${dateStr}</div>
+    </div>
+    <script>window.onload=function(){window.print()}<\/script>
+  </body></html>`;
+
+  const w = window.open('', '_blank');
+  if (w) { w.document.write(html); w.document.close(); }
+}
+
+// ---------------------------------------------------------------------------
 // API helpers
 // ---------------------------------------------------------------------------
 async function apiBatchDispatch(ids: number[]): Promise<number> {
@@ -272,7 +464,7 @@ function ProductRow({
   isWarehouse: boolean;
   isProdManager: boolean;
   canReceive: boolean;
-  orderById: Map<number, { product_name: string }>;
+  orderById: Map<number, OrderInfo>;
   busyItem: number | null;
   onDispatch: (ids: number[]) => void;
   onReceive: (ids: number[]) => void;
@@ -285,10 +477,6 @@ function ProductRow({
     .filter((i) => i.status === 'pending' && canDispatchItem(i, isWarehouse, isProdManager))
     .map((i) => i.id);
   const dispatchedIds = group.items.filter((i) => i.status === 'dispatched').map((i) => i.id);
-
-  const statuses = new Set(group.items.map((i) => i.status));
-  const combinedStatus: StatusKey =
-    statuses.size === 1 ? ([...statuses][0] as ProductionDispatch['status']) : 'mixed';
 
   const singleItem = !hasMultiple ? group.items[0]! : null;
   const singleOrderName = singleItem
@@ -317,9 +505,6 @@ function ProductRow({
           {group.productName}
         </span>
 
-        {/* Status */}
-        <StatusChip status={combinedStatus} />
-
         {/* Orders count badge */}
         {hasMultiple && (
           <button
@@ -336,35 +521,44 @@ function ProductRow({
           {fmtQty(group.totalQty, group.productUnit)}
         </span>
 
-        {/* Actions */}
-        <div className="flex shrink-0 items-center gap-1">
-          {isWarehouse && pendingIds.length > 0 && (
+        {/* Checkbox action */}
+        <div className="shrink-0 w-7 flex justify-center">
+          {allReceived ? (
+            /* Received — filled green */
+            <div className="size-5 rounded border-2 border-emerald-500 bg-emerald-500 flex items-center justify-center">
+              <Check className="size-3 text-white" strokeWidth={3} />
+            </div>
+          ) : isWarehouse && pendingIds.length > 0 ? (
+            /* Pending — empty checkbox, click → berildi */
             <button
+              type="button"
+              title="Berildi deb belgilash"
               onClick={() => onDispatch(pendingIds)}
               disabled={busyItem === -1 || pendingIds.some((id) => busyItem === id)}
-              className="inline-flex items-center gap-1 rounded-lg bg-primary/10 px-2 py-1 text-xs font-semibold text-primary hover:bg-primary/20 disabled:opacity-50 transition-colors"
+              className="size-5 rounded border-2 border-amber-400 bg-background hover:bg-amber-50 dark:hover:bg-amber-950/30 flex items-center justify-center disabled:opacity-50 transition-colors"
             >
-              {(busyItem === -1 || pendingIds.some((id) => busyItem === id)) ? (
-                <Loader2 className="size-3 animate-spin" />
-              ) : (
-                <Send className="size-3" />
+              {(busyItem === -1 || pendingIds.some((id) => busyItem === id)) && (
+                <Loader2 className="size-3 animate-spin text-amber-500" />
               )}
-              {hasMultiple ? `(${pendingIds.length})` : 'Berildi'}
             </button>
-          )}
-          {canReceive && dispatchedIds.length > 0 && (
+          ) : canReceive && dispatchedIds.length > 0 ? (
+            /* Dispatched — blue check, click → qabul */
             <button
+              type="button"
+              title="Qabul qilindi deb belgilash"
               onClick={() => onReceive(dispatchedIds)}
               disabled={busyItem === -1 || dispatchedIds.some((id) => busyItem === id)}
-              className="inline-flex items-center gap-1 rounded-lg bg-emerald-500/10 px-2 py-1 text-xs font-semibold text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50 transition-colors"
+              className="size-5 rounded border-2 border-blue-400 bg-blue-400/15 hover:bg-blue-400/25 flex items-center justify-center disabled:opacity-50 transition-colors"
             >
               {(busyItem === -1 || dispatchedIds.some((id) => busyItem === id)) ? (
-                <Loader2 className="size-3 animate-spin" />
+                <Loader2 className="size-3 animate-spin text-blue-500" />
               ) : (
-                <PackageCheck className="size-3" />
+                <Check className="size-3 text-blue-500" strokeWidth={3} />
               )}
-              {hasMultiple ? `(${dispatchedIds.length})` : 'Qabul'}
             </button>
+          ) : (
+            /* No action available — dim square */
+            <div className="size-5 rounded border-2 border-border/30" />
           )}
         </div>
       </div>
@@ -415,26 +609,35 @@ function ProductRow({
                 <span className="shrink-0 text-xs font-medium tabular-nums">
                   {fmtQty(item.qty_needed, item.product_unit)}
                 </span>
-                <div className="w-6 shrink-0 text-right">
-                  {isPending && canDispatchItem(item, isWarehouse, isProdManager) && (
+                <div className="w-6 shrink-0 flex justify-center">
+                  {isReceived ? (
+                    <div className="size-4 rounded border-2 border-emerald-500 bg-emerald-500 flex items-center justify-center">
+                      <Check className="size-2.5 text-white" strokeWidth={3} />
+                    </div>
+                  ) : isPending && canDispatchItem(item, isWarehouse, isProdManager) ? (
                     <button
                       disabled={isBusy}
                       onClick={() => onDispatch([item.id])}
-                      title="Berildi"
-                      className="inline-flex size-6 items-center justify-center rounded-md bg-primary/10 text-primary hover:bg-primary/20 disabled:opacity-50"
+                      title="Berildi deb belgilash"
+                      className="size-4 rounded border-2 border-amber-400 bg-background hover:bg-amber-50 dark:hover:bg-amber-950/30 flex items-center justify-center disabled:opacity-50 transition-colors"
                     >
-                      {isBusy ? <Loader2 className="size-2.5 animate-spin" /> : <Send className="size-2.5" />}
+                      {isBusy && <Loader2 className="size-2.5 animate-spin text-amber-500" />}
                     </button>
-                  )}
-                  {isDispatched && canReceive && (
+                  ) : isDispatched && canReceive ? (
                     <button
                       disabled={isBusy}
                       onClick={() => onReceive([item.id])}
-                      title="Qabul"
-                      className="inline-flex size-6 items-center justify-center rounded-md bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50"
+                      title="Qabul qilindi deb belgilash"
+                      className="size-4 rounded border-2 border-blue-400 bg-blue-400/15 hover:bg-blue-400/25 flex items-center justify-center disabled:opacity-50 transition-colors"
                     >
-                      {isBusy ? <Loader2 className="size-2.5 animate-spin" /> : <PackageCheck className="size-2.5" />}
+                      {isBusy ? (
+                        <Loader2 className="size-2.5 animate-spin text-blue-500" />
+                      ) : (
+                        <Check className="size-2.5 text-blue-500" strokeWidth={3} />
+                      )}
                     </button>
+                  ) : (
+                    <div className="size-4 rounded border-2 border-border/30" />
                   )}
                 </div>
               </div>
@@ -456,20 +659,22 @@ function SexSection({
   canReceive,
   orderById,
   onChanged,
+  defaultOpen,
 }: {
   group: DispatchGroup;
   isWarehouse: boolean;
   isProdManager: boolean;
   canReceive: boolean;
-  orderById: Map<number, { product_name: string }>;
+  orderById: Map<number, OrderInfo>;
   onChanged: () => void;
+  defaultOpen?: boolean;
 }) {
   const { notify } = useToast();
   const [busyItem, setBusyItem] = useState<number | null>(null);
 
   const allReceived = group.items.every((i) => i.status === 'received');
   const hasPending = group.items.some((i) => i.status === 'pending');
-  const [open, setOpen] = useState(!allReceived);
+  const [open, setOpen] = useState(defaultOpen ?? !allReceived);
 
   const pendingIds = group.items
     .filter((i) => i.status === 'pending' && canDispatchItem(i, isWarehouse, isProdManager))
@@ -486,6 +691,187 @@ function SexSection({
     : 'bg-blue-400';
 
   const productGroups = useMemo(() => groupByProduct(group.items), [group.items]);
+
+  async function openLocationPrint() {
+    const now = new Date();
+    const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+    function fmtN(n: number | null | undefined) {
+      if (n == null) return '—';
+      return n % 1 === 0 ? String(n) : n.toFixed(3).replace(/\.?0+$/, '');
+    }
+    function fmtMoney(n: number | null | undefined) {
+      if (n == null || n === 0) return '—';
+      return n.toLocaleString('uz-UZ') + " so'm";
+    }
+
+    const thS = 'padding:6px 10px;border:1px solid #ddd;background:#f5f5f5;font-size:12px;text-align:left;';
+    const thSR = thS + 'text-align:right;';
+    const tdS = 'padding:6px 10px;border:1px solid #ddd;font-size:12px;';
+    const tdSR = tdS + 'text-align:right;font-variant-numeric:tabular-nums;';
+
+    const xomRows = productGroups
+      .map(pg => `<tr>
+        <td style="${tdS}">${pg.productName}</td>
+        <td style="${tdSR}">${pg.totalQty.toLocaleString('uz-UZ')}</td>
+        <td style="${tdS}">${pg.productUnit}</td>
+        <td style="padding:6px 10px;border:1px solid #ddd;text-align:center">&#9633;</td>
+      </tr>`)
+      .join('');
+
+    // Traverse orderById up to find the root (GP) order for any given order ID.
+    function getRootGP(startId: number): { id: number; product_id: number | null; product_name: string; qty: number; unit: string; production_cost: number | null } {
+      let cur: OrderInfo | undefined = orderById.get(startId);
+      if (!cur) return { id: startId, product_id: null, product_name: '?', qty: 0, unit: '', production_cost: null };
+      const visited = new Set<number>();
+      while (cur.parent_production_order_id != null && !visited.has(cur.parent_production_order_id)) {
+        visited.add(cur.id);
+        const par = orderById.get(cur.parent_production_order_id);
+        if (!par) {
+          if (cur.grandparent_production_order_id != null && cur.grandparent_product_name) {
+            return { id: cur.grandparent_production_order_id, product_id: null, product_name: cur.grandparent_product_name, qty: cur.grandparent_qty ?? cur.parent_qty ?? cur.qty, unit: cur.grandparent_unit ?? cur.parent_unit ?? cur.unit ?? '', production_cost: cur.grandparent_production_cost ?? cur.parent_production_cost ?? cur.production_cost };
+          }
+          return { id: cur.parent_production_order_id, product_id: null, product_name: cur.parent_product_name ?? cur.product_name, qty: cur.parent_qty ?? cur.qty, unit: cur.parent_unit ?? cur.unit ?? '', production_cost: cur.parent_production_cost ?? cur.production_cost };
+        }
+        cur = par;
+      }
+      return { id: cur.id, product_id: cur.product_id, product_name: cur.product_name, qty: cur.qty, unit: cur.unit ?? '', production_cost: cur.production_cost };
+    }
+
+    // Split referenced orders into zagotovkas (sub-orders) and GP (final) products.
+    const referencedOrderIds = new Set(group.items.map(i => i.production_order_id));
+    const zagByName = new Map<string, { product_name: string; qty: number; unit: string }>();
+    const gpByName = new Map<string, { product_id: number | null; product_name: string; qty: number; unit: string; production_cost: number | null }>();
+    const seenGpRootIds = new Set<number>();
+
+    for (const ordId of referencedOrderIds) {
+      const o = orderById.get(ordId);
+      if (!o) continue;
+      if (o.product_type === 'semi') {
+        const ez = zagByName.get(o.product_name);
+        if (ez) { ez.qty += o.qty; } else { zagByName.set(o.product_name, { product_name: o.product_name, qty: o.qty, unit: o.unit ?? '' }); }
+        if (o.parent_production_order_id != null) {
+          const root = getRootGP(o.parent_production_order_id);
+          if (!seenGpRootIds.has(root.id)) {
+            seenGpRootIds.add(root.id);
+            gpByName.set(root.product_name, root);
+          }
+        }
+      } else {
+        const existing = gpByName.get(o.product_name);
+        if (existing) { existing.qty += o.qty; }
+        else { gpByName.set(o.product_name, { product_id: o.product_id, product_name: o.product_name, qty: o.qty, unit: o.unit ?? '', production_cost: o.production_cost }); }
+      }
+    }
+    // Find gp/finished orders at this location (match by name — location_id may be BIGINT-as-string from pg)
+    for (const o of orderById.values()) {
+      if ((o.product_type === 'gp' || o.product_type === 'finished') && !gpByName.has(o.product_name)) {
+        if (o.location_name === group.locationName) {
+          gpByName.set(o.product_name, { product_id: o.product_id, product_name: o.product_name, qty: o.qty, unit: o.unit ?? '', production_cost: o.production_cost });
+        }
+      }
+    }
+    const zagItems = [...zagByName.values()];
+    const gpItems = [...gpByName.values()];
+
+    // Fetch production_cost by product name (product_id may be undefined due to BIGINT serialisation quirk)
+    const locCostByName = new Map<string, number | null>();
+    if (gpItems.some(i => i.production_cost == null)) {
+      try {
+        const allProds = await apiRequest<{ name: string; production_cost: number | null }[]>('/api/products');
+        for (const prod of allProds) locCostByName.set(prod.name, prod.production_cost);
+      } catch { /* ignore */ }
+    }
+    function getGpCost(i: { product_name: string; production_cost: number | null }): number | null {
+      if (i.production_cost != null) return i.production_cost;
+      const fetched = locCostByName.get(i.product_name);
+      return fetched !== undefined ? fetched : null;
+    }
+
+    // ZAGOTOVKALAR section
+    let zagSection = '';
+    if (zagItems.length > 0) {
+      const zagRows = zagItems.map(z => `<tr>
+        <td style="${tdS}">${z.product_name}</td>
+        <td style="${tdSR}">${fmtN(z.qty)} ${z.unit}</td>
+        <td style="padding:6px 10px;border:1px solid #ddd;text-align:center">&#9633;</td>
+      </tr>`).join('');
+      zagSection = `
+        <p style="margin:16px 0 6px;font-size:11px;font-weight:700;text-transform:uppercase;color:#555;letter-spacing:.5px;">Zagotovkalar</p>
+        <table style="width:100%;border-collapse:collapse;margin-bottom:10px">
+          <thead><tr>
+            <th style="${thS}">Zagotovka</th>
+            <th style="${thSR}">Miqdor</th>
+            <th style="padding:6px 10px;border:1px solid #ddd;background:#f5f5f5;font-size:12px;text-align:center;">Tayyor</th>
+          </tr></thead>
+          <tbody>${zagRows}</tbody>
+        </table>`;
+    }
+
+    // TAYYOR MAHSULOT (GP) section
+    let gpSection = '';
+    if (gpItems.length > 0) {
+      const gpRows = gpItems.map(o => { const c = getGpCost(o); return `<tr>
+        <td style="${tdS}">${o.product_name}</td>
+        <td style="${tdSR}">${fmtN(o.qty)} ${o.unit}</td>
+        <td style="${tdSR}">${c != null ? fmtMoney(c) : '—'}</td>
+        <td style="${tdSR}">${c != null ? fmtMoney(o.qty * c) : '—'}</td>
+      </tr>`; }).join('');
+      const totalCost = gpItems.reduce((s, o) => { const c = getGpCost(o); return s + (c != null ? o.qty * c : 0); }, 0);
+      const hasCost = gpItems.some(o => getGpCost(o) != null);
+      const totalRow = `<tr style="background:#fef9f0;font-weight:700">
+        <td style="${tdS}font-weight:700" colspan="3">JAMI</td>
+        <td style="${tdSR}font-weight:700;color:#d97706">${hasCost ? fmtMoney(totalCost) : '—'}</td>
+      </tr>`;
+      gpSection = `
+        <p style="margin:16px 0 6px;font-size:11px;font-weight:700;text-transform:uppercase;color:#555;letter-spacing:.5px;">Tayyor mahsulot (Г/П)</p>
+        <table style="width:100%;border-collapse:collapse;margin-bottom:10px">
+          <thead><tr>
+            <th style="${thS}">Mahsulot</th>
+            <th style="${thSR}">Miqdor</th>
+            <th style="${thSR}">Narx/birlik</th>
+            <th style="${thSR}">Jami summa</th>
+          </tr></thead>
+          <tbody>${gpRows}${totalRow}</tbody>
+        </table>
+        ${hasCost ? `<div style="background:#fef9f0;border:1px solid #fed7aa;border-radius:6px;padding:8px 12px;display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <span style="font-size:12px;color:#92400e;font-weight:600">Jami ishlab chiqarish narxi:</span>
+          <span style="font-size:15px;font-weight:700;color:#d97706">${fmtMoney(totalCost)}</span>
+        </div>` : ''}`;
+    }
+
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+      <title>${group.locationName} — Xomashyo ro'yxati</title>
+      <style>
+        body{font-family:Arial,sans-serif;margin:24px;color:#111}
+        h2{margin:0 0 4px}
+        p.sub{margin:0 0 16px;color:#555;font-size:13px}
+        table{width:100%;border-collapse:collapse}
+        .footer{margin-top:32px;font-size:12px;color:#555}
+        @media print{@page{margin:10mm}}
+      </style>
+    </head><body>
+      <h2>${group.locationName}</h2>
+      <p class="sub">Sana: ${dateStr}</p>
+      <p style="margin:0 0 6px;font-size:11px;font-weight:700;text-transform:uppercase;color:#555;letter-spacing:.5px;">Beriladigan xomashyo</p>
+      <table style="margin-bottom:10px">
+        <thead><tr>
+          <th style="${thS}">Mahsulot</th>
+          <th style="${thSR}">Miqdor</th>
+          <th style="${thS}">Birlik</th>
+          <th style="padding:6px 10px;border:1px solid #ddd;background:#f5f5f5;font-size:12px;text-align:center;">Berildi &#10003;</th>
+        </tr></thead>
+        <tbody>${xomRows}</tbody>
+      </table>
+      ${zagSection}${gpSection}
+      <div class="footer">
+        <p>Berdi: _____________________________ &nbsp;&nbsp;&nbsp; Qabul qildi: _____________________________</p>
+      </div>
+      <script>window.print();<\/script>
+    </body></html>`;
+    const w = window.open('', '_blank');
+    if (w) { w.document.write(html); w.document.close(); }
+  }
 
   async function handleDispatch(ids: number[]) {
     if (ids.length === 0) return;
@@ -574,6 +960,16 @@ function SexSection({
           {receivedCount}/{total}
         </span>
 
+        {/* PDF print button */}
+        <button
+          type="button"
+          onClick={() => { void openLocationPrint(); }}
+          title="PDF chop etish"
+          className="shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <Printer className="size-3.5" />
+        </button>
+
         {/* Bulk action or done indicator */}
         {allReceived ? (
           <span className="flex shrink-0 items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
@@ -641,7 +1037,7 @@ function ProdManagerCards({
   onChanged,
 }: {
   items: ProductionDispatch[];
-  orderById: Map<number, { product_name: string }>;
+  orderById: Map<number, OrderInfo>;
   canReceive: boolean;
   onChanged: () => void;
 }) {
@@ -706,9 +1102,10 @@ const PAGE_META: Record<string, { title: string; description: string }> = {
   raw:      { title: 'Xomashyo',        description: 'Xom-ashyo omboridan sexlarga beriladigan materiallar' },
   semi:     { title: 'Yarim tayyor',    description: 'Sexlar orasida ko\'chiriladigan yarim tayyor mahsulotlar' },
   finished: { title: 'Tayyor mahsulot', description: 'Sexdan markaziy omborga yoki do\'konga jo\'natiladigan tayyor mahsulotlar' },
+  gp:       { title: 'Готовая продукция', description: 'Готовая продукция uchun xomashyo berish' },
 };
 
-export function WarehouseDispatchPage({ productTypeFilter }: { productTypeFilter?: 'raw' | 'semi' | 'finished' }) {
+export function WarehouseDispatchPage({ productTypeFilter }: { productTypeFilter?: 'raw' | 'semi' | 'finished' | 'gp' }) {
   const { user } = useAuth();
   const { notify } = useToast();
   const isSuperAdmin = user?.role === 'pm' || user?.role === 'super_admin';
@@ -733,6 +1130,7 @@ export function WarehouseDispatchPage({ productTypeFilter }: { productTypeFilter
   const [busyReceiveAll, setBusyReceiveAll] = useState(false);
   const [busyBackfill, setBusyBackfill] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
   const allDispatchItems = data?.dispatch_items ?? [];
   const selectedOrdIds = ordFilter.order ?? [];
@@ -748,6 +1146,11 @@ export function WarehouseDispatchPage({ productTypeFilter }: { productTypeFilter
   );
 
   const groups = useMemo(() => groupByLocation(dispatchItems), [dispatchItems]);
+
+  const effectiveKey = selectedKey ?? (groups.length > 0 ? String(groups[0]!.locationId ?? '__null__') : null);
+  const selectedGroup = groups.find((g) => String(g.locationId ?? '__null__') === effectiveKey) ?? null;
+
+  const printOnly = productTypeFilter === 'raw' || productTypeFilter === 'semi';
 
   const allPendingIds = dispatchItems.filter((i) => i.status === 'pending').map((i) => i.id);
   const allDispatchedIds = dispatchItems.filter((i) => i.status === 'dispatched').map((i) => i.id);
@@ -776,8 +1179,20 @@ export function WarehouseDispatchPage({ productTypeFilter }: { productTypeFilter
   }, [allDispatchItems]);
 
   const orderById = useMemo(() => {
-    const m = new Map<number, { product_name: string }>();
-    for (const o of orders) m.set(o.id, o);
+    const m = new Map<number, OrderInfo>();
+    for (const o of orders) m.set(o.id, {
+      id: o.id, product_id: o.product_id, product_name: o.product_name, qty: o.qty, unit: o.unit ?? '',
+      location_id: o.location_id, location_name: o.location_name ?? null, product_type: o.product_type, production_cost: o.production_cost,
+      target_location_name: o.target_location_name ?? null,
+      parent_production_order_id: o.parent_production_order_id,
+      parent_product_name: o.parent_product_name, parent_unit: o.parent_unit,
+      parent_qty: o.parent_qty, parent_production_cost: o.parent_production_cost,
+      grandparent_production_order_id: o.grandparent_production_order_id ?? null,
+      grandparent_product_name: o.grandparent_product_name ?? null,
+      grandparent_unit: o.grandparent_unit ?? null,
+      grandparent_qty: o.grandparent_qty ?? null,
+      grandparent_production_cost: o.grandparent_production_cost ?? null,
+    });
     return m;
   }, [orders]);
 
@@ -868,7 +1283,7 @@ export function WarehouseDispatchPage({ productTypeFilter }: { productTypeFilter
         }
         action={
           <div className="flex items-center gap-2">
-            {isWarehouse && allPendingIds.length > 0 && (
+            {!printOnly && isWarehouse && allPendingIds.length > 0 && (
               <Button onClick={batchDispatchAll} disabled={busyBulkAll} className="gap-2">
                 {busyBulkAll ? (
                   <Loader2 className="size-4 animate-spin" />
@@ -878,7 +1293,7 @@ export function WarehouseDispatchPage({ productTypeFilter }: { productTypeFilter
                 Hammasini berildi ({allPendingIds.length})
               </Button>
             )}
-            {canReceive && allDispatchedIds.length > 0 && (
+            {!printOnly && canReceive && allDispatchedIds.length > 0 && (
               <Button
                 onClick={batchReceiveAll}
                 disabled={busyReceiveAll}
@@ -899,11 +1314,21 @@ export function WarehouseDispatchPage({ productTypeFilter }: { productTypeFilter
                 Hammasi tugallandi
               </div>
             )}
+            {dispatchItems.length > 0 && (
+              <Button
+                variant="outline"
+                className="gap-2"
+                onClick={() => { void openGlobalPrint(dispatchItems, dateFrom === dateTo ? dateFrom : `${dateFrom} — ${dateTo}`, orders.map(o => ({ id: o.id, product_id: o.product_id, product_name: o.product_name, qty: o.qty, unit: o.unit ?? '', location_id: o.location_id, location_name: o.location_name ?? null, product_type: o.product_type, production_cost: o.production_cost, target_location_name: o.target_location_name ?? null, parent_production_order_id: o.parent_production_order_id, parent_product_name: o.parent_product_name, parent_unit: o.parent_unit, parent_qty: o.parent_qty, parent_production_cost: o.parent_production_cost, grandparent_production_order_id: o.grandparent_production_order_id ?? null, grandparent_product_name: o.grandparent_product_name ?? null, grandparent_unit: o.grandparent_unit ?? null, grandparent_qty: o.grandparent_qty ?? null, grandparent_production_cost: o.grandparent_production_cost ?? null }))); }}
+              >
+                <Printer className="size-4" />
+                Chop etish
+              </Button>
+            )}
           </div>
         }
       />
 
-      {/* Pipeline stat card — shows unfiltered totals so counts stay stable */}
+      {/* Pipeline stat card — shown for all tabs */}
       <PipelineStat
         items={allDispatchItems.filter(
           (i) =>
@@ -914,6 +1339,11 @@ export function WarehouseDispatchPage({ productTypeFilter }: { productTypeFilter
         )}
         statusFilter={statusFilter}
         onStatusFilter={setStatusFilter}
+        dateLabel={
+          dateFrom === dateTo
+            ? (dateFrom === today ? 'Bugungi holat' : dateFrom)
+            : `${dateFrom} — ${dateTo}`
+        }
       />
 
       {/* Filter bar */}
@@ -1002,18 +1432,67 @@ export function WarehouseDispatchPage({ productTypeFilter }: { productTypeFilter
       ) : myLocationId !== null ? (
         <ProdManagerCards items={dispatchItems} orderById={orderById} canReceive={canReceive} onChanged={refetch} />
       ) : (
-        <div className="space-y-5">
-          {groups.map((group) => (
-            <SexSection
-              key={group.locationId ?? '__null__'}
-              group={group}
-              isWarehouse={isWarehouse}
-              isProdManager={isProdManager}
-              canReceive={canReceive}
-              orderById={orderById}
-              onChanged={refetch}
-            />
-          ))}
+        <div className="flex gap-3 items-start">
+          {/* Left: sex list */}
+          <div className="w-60 shrink-0 space-y-1">
+            {groups.map((group) => {
+              const key = String(group.locationId ?? '__null__');
+              const allRcv = group.items.every((i) => i.status === 'received');
+              const hasPnd = group.items.some((i) => i.status === 'pending');
+              const rcvCount = group.items.filter((i) => i.status === 'received').length;
+              const total = group.items.length;
+              const dotColor = allRcv ? 'bg-emerald-500' : hasPnd ? 'bg-amber-400' : 'bg-blue-400';
+              const isSelected = effectiveKey === key;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setSelectedKey(key)}
+                  className={`w-full text-left rounded-xl px-3 py-2.5 transition-colors border ${
+                    isSelected
+                      ? 'bg-primary/10 border-primary/30'
+                      : 'bg-card border-border/40 hover:bg-muted/50'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <span className={`size-2 shrink-0 rounded-full ${dotColor}`} />
+                    <span className={`text-sm flex-1 truncate ${isSelected ? 'font-semibold text-primary' : 'font-medium'}`}>
+                      {group.locationName}
+                    </span>
+                    <span className="text-xs text-muted-foreground tabular-nums shrink-0">
+                      {rcvCount}/{total}
+                    </span>
+                  </div>
+                  <div className="h-1 rounded-full bg-border/30 overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all ${allRcv ? 'bg-emerald-500' : hasPnd ? 'bg-amber-400' : 'bg-blue-400'}`}
+                      style={{ width: `${total > 0 ? Math.round((rcvCount / total) * 100) : 0}%` }}
+                    />
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Right: detail panel */}
+          <div className="flex-1 min-w-0 rounded-xl border border-border/50 bg-card/60 p-4">
+            {selectedGroup ? (
+              <SexSection
+                key={effectiveKey ?? ''}
+                group={selectedGroup}
+                isWarehouse={isWarehouse}
+                isProdManager={isProdManager}
+                canReceive={canReceive}
+                orderById={orderById}
+                onChanged={refetch}
+                defaultOpen={true}
+              />
+            ) : (
+              <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
+                Sexni tanlang
+              </div>
+            )}
+          </div>
         </div>
       )}
 

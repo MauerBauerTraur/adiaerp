@@ -181,7 +181,7 @@ const LOCATION_TYPES = [
   'store',
 ] as const;
 
-const PRODUCT_TYPES = ['raw', 'semi', 'finished'] as const;
+const PRODUCT_TYPES = ['raw', 'semi', 'finished', 'gp'] as const;
 
 // ---------------------------------------------------------------------------
 // 0a. list_locations
@@ -267,7 +267,7 @@ const listProducts: ToolExecutor = {
       properties: {
         type: {
           type: Type.STRING,
-          description: 'Optional product_type filter. One of: raw, semi, finished.',
+          description: 'Optional product_type filter. One of: raw, semi, finished, gp.',
         },
         name_contains: {
           type: Type.STRING,

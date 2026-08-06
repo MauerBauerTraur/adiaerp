@@ -1,12 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
+  AlertTriangle,
   ArrowLeft,
   CheckCircle2,
+  ExternalLink,
   Loader2,
   PackageCheck,
-  PlayCircle,
+  Pencil,
+  Printer,
   Send,
+  X,
   XCircle,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -26,6 +30,7 @@ import {
 import type {
   ProductionDispatch,
   ProductionOrder,
+  ProductionOrderAllocation,
   ProductionOrderBomResponse,
 } from '@/lib/types';
 import {
@@ -135,18 +140,10 @@ function SubOrderDetail({
 
       {canAct && isActive && (
         <div className="flex flex-wrap gap-1.5 border-b border-border/40 px-3 py-2">
-          {sub.status === 'new' && (
-            <Button size="sm" disabled={busyStatus !== null} onClick={() => transition('in_progress')} className="h-7 gap-1 text-xs">
-              {busyStatus === 'in_progress' ? <Loader2 className="size-3 animate-spin" /> : <PlayCircle className="size-3" />}
-              Boshlash
-            </Button>
-          )}
-          {sub.status === 'in_progress' && (
-            <Button size="sm" disabled={busyStatus !== null} onClick={() => transition('done')} className="h-7 gap-1 text-xs">
-              {busyStatus === 'done' ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />}
-              Topshirish
-            </Button>
-          )}
+          <Button size="sm" disabled={busyStatus !== null} onClick={() => transition('done')} className="h-7 gap-1 text-xs">
+            {busyStatus === 'done' ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />}
+            Tayyor
+          </Button>
           <Button variant="outline" size="sm" disabled={busyStatus !== null} onClick={() => transition('cancelled')}
             className="h-7 gap-1 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive">
             {busyStatus === 'cancelled' ? <Loader2 className="size-3 animate-spin" /> : <XCircle className="size-3" />}
@@ -519,11 +516,181 @@ export function ProductionOrderDetailPage() {
   const order = data?.order;
   const bom = data?.bom ?? [];
   const subOrders = data?.sub_orders ?? [];
+  const allocations: ProductionOrderAllocation[] = data?.allocations ?? [];
+
+  const sebestoimost = useMemo(() => {
+    function sumNodes(nodes: typeof bom): { total: number; complete: boolean } {
+      let total = 0; let complete = true;
+      for (const n of nodes) {
+        if (n.children.length > 0) {
+          const r = sumNodes(n.children);
+          total += r.total;
+          if (!r.complete) complete = false;
+        } else {
+          if (n.cost_price != null) { total += n.qty * n.cost_price; }
+          else { complete = false; }
+        }
+      }
+      return { total, complete };
+    }
+    return sumNodes(bom);
+  }, [bom]);
 
   const [busyStatus, setBusyStatus] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const canAct = isPm || (order ? canActOn(order.location_id) : false);
+
+  // ── Inline edit state ────────────────────────────────────────────────────
+  const [editMode, setEditMode] = useState(false);
+  const [editQty, setEditQty] = useState('');
+  const [editStatus, setEditStatus] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+
+  function enterEdit() {
+    if (!order) return;
+    setEditQty(String(order.qty));
+    setEditStatus(order.status);
+    setEditMode(true);
+  }
+
+  async function saveEdit() {
+    if (!order) return;
+    const newQty = Number(String(editQty).replace(',', '.'));
+    if (!Number.isFinite(newQty) || newQty <= 0) {
+      notify('error', "Miqdor 0 dan katta bo'lishi kerak.");
+      return;
+    }
+    setIsSaving(true);
+    const changes: string[] = [];
+    try {
+      // PUT for qty — only when status is still 'new'
+      if (order.status === 'new' && newQty !== order.qty) {
+        await apiRequest(`/api/production-orders/${order.id}`, {
+          method: 'PUT',
+          body: { qty: newQty },
+        });
+        changes.push(`Miqdor: ${order.qty} → ${newQty} ${order.product_unit ?? ''}`);
+      }
+      // PATCH for status
+      if (editStatus !== order.status) {
+        await apiRequest(`/api/production-orders/${order.id}`, {
+          method: 'PATCH',
+          body: { status: editStatus },
+        });
+        const statusLabels: Record<string, string> = {
+          new: 'Yaratildi', in_progress: 'Jarayonda', done: 'Tayyor', cancelled: 'Bekor',
+        };
+        changes.push(`Holat: ${statusLabels[order.status] ?? order.status} → ${statusLabels[editStatus] ?? editStatus}`);
+      }
+      notify('success', changes.length > 0 ? changes.join(' · ') : "Oʻzgarish yoʻq.");
+      setEditMode(false);
+      refetchAll();
+    } catch (err: unknown) {
+      notify('error', err instanceof ApiError ? err.message : "Saqlashda xatolik.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  const [telegramBusy, setTelegramBusy] = useState(false);
+
+  async function sendTelegram() {
+    if (!order) return;
+    setTelegramBusy(true);
+    try {
+      await apiRequest(`/api/production-orders/${order.id}/notify`, { method: 'POST' });
+      notify('success', 'Telegram xabari yuborildi!');
+    } catch (err: unknown) {
+      notify('error', err instanceof ApiError ? err.message : "Telegram yuborib bo'lmadi.");
+    } finally {
+      setTelegramBusy(false);
+    }
+  }
+
+  function printOrder() {
+    if (!order) return;
+    const unit = order.product_unit ?? '';
+
+    // Flatten BOM leaf nodes (raw materials)
+    type LeafRow = { name: string; qty: number; unit: string };
+    function flattenLeaves(nodes: typeof bom, rows: LeafRow[] = []): LeafRow[] {
+      for (const n of nodes) {
+        if (n.children.length === 0) {
+          rows.push({ name: n.component_name, qty: n.qty, unit: n.component_unit });
+        } else {
+          flattenLeaves(n.children, rows);
+        }
+      }
+      return rows;
+    }
+    const leaves = flattenLeaves(bom);
+
+    // Aggregate same-named ingredients that appear in multiple BOM branches
+    const aggregated = new Map<string, LeafRow>();
+    for (const l of leaves) {
+      const existing = aggregated.get(l.name);
+      if (existing) {
+        existing.qty += l.qty;
+      } else {
+        aggregated.set(l.name, { ...l });
+      }
+    }
+    const uniqueLeaves = [...aggregated.values()].sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+
+    const rawTable =
+      uniqueLeaves.length > 0
+        ? `<h2 style="margin-top:20px;font-size:15px;border-bottom:1px solid #ddd;padding-bottom:6px">Xomashyolar ro'yxati</h2>
+           <table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px">
+             <thead><tr style="background:#f5f5f5">
+               <th style="text-align:left;padding:6px 8px;border:1px solid #ddd">Xomashyo</th>
+               <th style="text-align:right;padding:6px 8px;border:1px solid #ddd">Miqdor</th>
+               <th style="text-align:right;padding:6px 8px;border:1px solid #ddd">Berildi ✓</th>
+             </tr></thead>
+             <tbody>${uniqueLeaves
+               .map(
+                 (l) =>
+                   `<tr><td style="padding:6px 8px;border:1px solid #eee">${l.name}</td>
+                    <td style="padding:6px 8px;border:1px solid #eee;text-align:right;font-weight:600">${l.qty.toLocaleString('uz-UZ', { maximumFractionDigits: 3 })} ${l.unit}</td>
+                    <td style="padding:6px 8px;border:1px solid #eee;text-align:right;color:#aaa">□</td></tr>`,
+               )
+               .join('')}
+             </tbody>
+           </table>`
+        : '';
+
+    const win = window.open('', '_blank', 'width=750,height=900');
+    if (!win) return;
+    win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Zayafka #${order.id}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',sans-serif;padding:30px;color:#111;font-size:14px}
+  h1{font-size:20px;font-weight:700;margin-bottom:4px}
+  .sub{color:#666;font-size:12px;margin-bottom:20px}
+  .row{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #f0f0f0}
+  .label{color:#888;font-size:12px}
+  .value{font-weight:600}
+  .big{font-size:20px;color:#1a56db}
+  .print-btn{margin-top:24px;padding:8px 20px;background:#1a56db;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:14px}
+  @media print{.print-btn{display:none}}
+</style></head><body>
+<h1>Ishlab chiqarish zayafkasi</h1>
+<p class="sub">ADIA ERP · Yaratilgan: ${new Date(order.created_at).toLocaleDateString('uz-UZ')}</p>
+<div class="row"><span class="label">Zayafka #</span><span class="value">#${order.id}</span></div>
+<div class="row"><span class="label">Mahsulot</span><span class="value">${order.product_name}</span></div>
+<div class="row"><span class="label">Miqdor</span><span class="value big">${order.qty} ${unit}</span></div>
+<div class="row"><span class="label">Bo'g'in (Sex)</span><span class="value">${order.location_name ?? '—'}</span></div>
+${order.deadline ? `<div class="row"><span class="label">Muddat</span><span class="value">${order.deadline}</span></div>` : ''}
+${order.note ? `<div class="row"><span class="label">Izoh</span><span class="value">${order.note}</span></div>` : ''}
+${rawTable}
+<button class="print-btn" onclick="window.print()">Chop etish / PDF saqlash</button>
+</body></html>`);
+    win.document.close();
+    win.focus();
+  }
 
   async function transition(nextStatus: 'in_progress' | 'done' | 'cancelled') {
     if (!order) return;
@@ -573,6 +740,40 @@ export function ProductionOrderDetailPage() {
             {PRODUCTION_ORDER_STATUS_LABELS[order.status]}
           </Badge>
         </div>
+        <div className="flex shrink-0 items-center gap-1">
+          {canAct && isActive && (
+            <Button
+              variant={editMode ? 'secondary' : 'outline'}
+              size="sm"
+              className="gap-1.5"
+              onClick={() => (editMode ? setEditMode(false) : enterEdit())}
+            >
+              {editMode ? <X className="size-4" /> : <Pencil className="size-4" />}
+              <span className="hidden sm:inline text-xs">{editMode ? 'Yopish' : 'Tahrirlash'}</span>
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-1.5 text-sky-500 hover:text-sky-600"
+            disabled={telegramBusy}
+            onClick={() => void sendTelegram()}
+            title="Telegramga yuborish"
+          >
+            {telegramBusy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+            <span className="hidden sm:inline text-xs">Telegram</span>
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-1.5"
+            onClick={printOrder}
+            title="Chop etish / PDF"
+          >
+            <Printer className="size-4" />
+            <span className="hidden sm:inline text-xs">PDF</span>
+          </Button>
+        </div>
       </div>
 
       {/* ── Two-column body ── */}
@@ -613,20 +814,149 @@ export function ProductionOrderDetailPage() {
               )}
             </dl>
 
+            {/* Store allocations breakdown */}
+            {allocations.length > 0 && (
+              <div className="mt-3 border-t border-border/60 pt-3">
+                <p className="mb-2 text-xs font-medium text-muted-foreground">Do'konlarga taqsimlash</p>
+                <div className="space-y-1">
+                  {allocations.map((a) => (
+                    <div key={a.id} className="flex items-center justify-between text-sm">
+                      <span className="truncate text-foreground">{a.store_location_name}</span>
+                      <span className="ml-2 shrink-0 font-semibold tabular-nums text-primary">
+                        {a.qty} {unit}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ── Inline edit panel ── */}
+            {editMode && (
+              <div className="mt-4 rounded-xl border border-primary/25 bg-primary/5 p-4 space-y-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tahrirlash</p>
+
+                {/* Qty — only editable when 'new' */}
+                <div className="space-y-1">
+                  <label className="text-xs font-medium">Miqdor</label>
+                  {order.status === 'new' ? (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min="0.001"
+                          step="any"
+                          value={editQty}
+                          onChange={(e) => setEditQty(e.target.value)}
+                          className="w-28 rounded-lg border border-border bg-background px-3 py-1.5 text-sm tabular-nums"
+                        />
+                        <span className="text-xs text-muted-foreground">{order.product_unit ?? ''}</span>
+                      </div>
+                      {Number(editQty) !== order.qty && Number(editQty) > 0 && (
+                        <p className="text-xs text-amber-600 dark:text-amber-400">
+                          {order.qty} {order.product_unit ?? ''} edi → {editQty} {order.product_unit ?? ''} bo'ladi
+                        </p>
+                      )}
+                      {Number(editQty) === order.qty && (
+                        <p className="text-xs text-muted-foreground">Hozirgi: {order.qty} {order.product_unit ?? ''}</p>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      {order.qty} {order.product_unit ?? ''}{' '}
+                      <span className="text-xs">(faqat "Yaratildi" holatida tahrirlash mumkin)</span>
+                    </p>
+                  )}
+                </div>
+
+                {/* Status */}
+                <div className="space-y-1">
+                  <label className="text-xs font-medium">Holat</label>
+                  <select
+                    value={editStatus}
+                    onChange={(e) => setEditStatus(e.target.value)}
+                    className="rounded-lg border border-border bg-background px-3 py-1.5 text-sm"
+                  >
+                    <option value={order.status}>
+                      {PRODUCTION_ORDER_STATUS_LABELS[order.status] ?? order.status} (hozirgi)
+                    </option>
+                    {(order.status === 'new' || order.status === 'in_progress') && (
+                      <option value="done">{PRODUCTION_ORDER_STATUS_LABELS['done']}</option>
+                    )}
+                    {(order.status === 'new' || order.status === 'in_progress') && (
+                      <option value="cancelled">{PRODUCTION_ORDER_STATUS_LABELS['cancelled']}</option>
+                    )}
+                  </select>
+                  {editStatus !== order.status && (
+                    <p className="text-xs text-amber-600 dark:text-amber-400">
+                      {PRODUCTION_ORDER_STATUS_LABELS[order.status] ?? order.status} edi →{' '}
+                      {PRODUCTION_ORDER_STATUS_LABELS[editStatus as keyof typeof PRODUCTION_ORDER_STATUS_LABELS] ?? editStatus} boʻladi
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex gap-2 pt-1">
+                  <Button size="sm" disabled={isSaving} onClick={() => void saveEdit()} className="gap-1.5">
+                    {isSaving && <Loader2 className="size-3.5 animate-spin" />}
+                    Saqlash
+                  </Button>
+                  <Button variant="outline" size="sm" disabled={isSaving} onClick={() => setEditMode(false)}>
+                    Bekor
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* Production cost */}
+            <div className="mt-3">
+              {order.production_cost != null ? (
+                <div className="rounded-lg bg-violet-500/8 px-3 py-2">
+                  <p className="text-xs text-muted-foreground">Ishlab chiqarish xarajati</p>
+                  <p className="text-base font-bold tabular-nums text-violet-700 dark:text-violet-400">
+                    {(order.qty * order.production_cost).toLocaleString('uz-UZ', { maximumFractionDigits: 0 })} so'm
+                  </p>
+                  <p className="text-[10px] text-muted-foreground">
+                    {order.production_cost.toLocaleString('uz-UZ', { maximumFractionDigits: 0 })} so'm × {order.qty} {unit}
+                  </p>
+                </div>
+              ) : (
+                <div className="flex items-start gap-2 rounded-lg border border-rose-500/30 bg-rose-500/8 px-3 py-2 text-xs text-rose-700 dark:text-rose-400">
+                  <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                  <span>
+                    Ishlab chiqarish narxi belgilanmagan.{' '}
+                    <a
+                      href="/products"
+                      onClick={(e) => { e.preventDefault(); navigate('/products'); }}
+                      className="inline-flex items-center gap-0.5 underline underline-offset-2 hover:opacity-80"
+                    >
+                      Mahsulotlar sahifasida
+                      <ExternalLink className="size-3" />
+                    </a>
+                    {' '}<span className="font-medium">"{order.product_name}"</span> mahsulotiga narx kiriting.
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Jami xomashyo sebestoimost */}
+            {sebestoimost.total > 0 && (
+              <div className="mt-2 rounded-lg border border-amber-500/25 bg-amber-500/8 px-3 py-2.5">
+                <p className="text-xs text-muted-foreground">Jami xomashyo (Sebestoimost)</p>
+                <p className="text-base font-bold tabular-nums text-amber-700 dark:text-amber-400">
+                  {sebestoimost.total.toLocaleString('uz-UZ', { maximumFractionDigits: 0 })} so'm
+                </p>
+                {!sebestoimost.complete && (
+                  <p className="text-[10px] text-muted-foreground">* Ba'zi materiallar narxi belgilanmagan</p>
+                )}
+              </div>
+            )}
+
             {canAct && isActive && (
               <div className="mt-4 flex flex-wrap gap-2 border-t border-border/60 pt-4">
-                {order.status === 'new' && (
-                  <Button disabled={busyStatus !== null} onClick={() => transition('in_progress')} className="gap-2">
-                    {busyStatus === 'in_progress' ? <Loader2 className="size-4 animate-spin" /> : <PlayCircle className="size-4" />}
-                    Boshlash
-                  </Button>
-                )}
-                {order.status === 'in_progress' && (
-                  <Button disabled={busyStatus !== null} onClick={() => transition('done')} className="gap-2">
-                    {busyStatus === 'done' ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
-                    Topshirish
-                  </Button>
-                )}
+                <Button disabled={busyStatus !== null} onClick={() => transition('done')} className="gap-2">
+                  {busyStatus === 'done' ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+                  Tayyor qilish
+                </Button>
                 <Button variant="outline" disabled={busyStatus !== null} onClick={() => transition('cancelled')}
                   className="gap-2 text-destructive hover:bg-destructive/10 hover:text-destructive">
                   {busyStatus === 'cancelled' ? <Loader2 className="size-4 animate-spin" /> : <XCircle className="size-4" />}

@@ -633,7 +633,8 @@ export async function syncMenuProducts(
       idMap.set(ppid, adiaId);
       applied += 1;
       // Save Poster-calculated BOM cost (cost field from menu.getProducts list).
-      const posterCost = Number(p.cost ?? '');
+      // Poster returns cost in tiyin (kopecks × 100); divide by 100 to store in so'm.
+      const posterCost = Math.round(Number(p.cost ?? '') / 100);
       if (Number.isFinite(posterCost) && posterCost > 0) {
         await query(
           `UPDATE products SET cost_price = $1, updated_at = now()
@@ -650,13 +651,15 @@ export async function syncMenuProducts(
       if (parentId === undefined) continue;
       const full = await client.getProduct(ppid);
       if (full === null) continue;
-      // Save selling price — Poster returns per-spot prices; take the first spot's price.
+      // Save selling price — only when not yet set manually (sell_price IS NULL).
+      // This prevents Poster sync from overwriting prices the user has set by hand.
+      // Poster returns price in tiyin; divide by 100 to store in so'm.
       if (full.price !== null && full.price !== undefined && typeof full.price === 'object') {
-        const firstPrice = Number(Object.values(full.price)[0] ?? '');
+        const firstPrice = Math.round(Number(Object.values(full.price)[0] ?? '') / 100);
         if (Number.isFinite(firstPrice) && firstPrice > 0) {
           await query(
             `UPDATE products SET sell_price = $1, updated_at = now()
-             WHERE id = $2 AND sell_price IS DISTINCT FROM $1`,
+             WHERE id = $2 AND sell_price IS NULL`,
             [firstPrice, parentId],
           );
         }

@@ -12,9 +12,9 @@ import {
   MapPin,
   Package,
   Pencil,
-  Play,
   Plus,
   ScrollText,
+  ShoppingCart,
   Trash2,
   X,
 } from 'lucide-react';
@@ -52,13 +52,15 @@ import type {
   ProductionOrder,
   RecipeLine,
   RecipeStage,
+  SaleRow,
+  SalesResponse,
   StockMovement,
   StockRow,
   UsedInEntry,
 } from '@/lib/types';
 import { ProductionOrderFormDialog } from '../production-orders/ProductionOrderFormDialog';
 
-export type Tab = 'stock' | 'orders' | 'used-in' | 'movements';
+export type Tab = 'stock' | 'orders' | 'used-in' | 'movements' | 'sales';
 
 interface ProductDetailDialogProps {
   product: Product | null;
@@ -70,6 +72,8 @@ interface ProductDetailDialogProps {
   canEditRecipe: boolean;
   /** Tab to open when the product first loads (default: 'stock'). */
   defaultTab?: Tab;
+  /** Called after any field (sell_price, production_cost) is saved — parent can refetch. */
+  onSaved?: () => void;
 }
 
 function normalizeStage(s: RecipeLine['stage']): RecipeStage {
@@ -257,6 +261,7 @@ export function ProductDetailSheet({
   onProductClick,
   canEditRecipe,
   defaultTab,
+  onSaved,
 }: ProductDetailDialogProps) {
   const { notify } = useToast();
   const { user } = useAuth();
@@ -277,6 +282,7 @@ export function ProductDetailSheet({
   const [orders, setOrders] = useState<ProductionOrder[] | null>(null);
   const [usedIn, setUsedIn] = useState<UsedInEntry[] | null>(null);
   const [movements, setMovements] = useState<StockMovement[] | null>(null);
+  const [sales, setSales] = useState<SaleRow[] | null>(null);
   const [tabLoading, setTabLoading] = useState(false);
   const [tabErr, setTabErr] = useState<string | null>(null);
 
@@ -296,6 +302,11 @@ export function ProductDetailSheet({
   const [sellPriceInput, setSellPriceInput] = useState('');
   // undefined = use product.sell_price; null/number = local override after save
   const [localSellPrice, setLocalSellPrice] = useState<number | null | undefined>(undefined);
+  // Production cost inline editing
+  const [editingProdCost, setEditingProdCost] = useState(false);
+  const [prodCostInput, setProdCostInput] = useState('');
+  const [prodCostPct, setProdCostPct] = useState('');
+  const [localProdCost, setLocalProdCost] = useState<number | null | undefined>(undefined);
 
   // Reset all state when product changes
   useEffect(() => {
@@ -309,6 +320,7 @@ export function ProductDetailSheet({
     setOrders(null);
     setUsedIn(null);
     setMovements(null);
+    setSales(null);
     setSelectedOrder(null);
     setCreateOrderOpen(false);
     setEditOrderTarget(null);
@@ -318,6 +330,10 @@ export function ProductDetailSheet({
     setEditingSellPrice(false);
     setSellPriceInput('');
     setLocalSellPrice(undefined);
+    setEditingProdCost(false);
+    setProdCostInput('');
+    setProdCostPct('');
+    setLocalProdCost(undefined);
 
     if (effectiveType(product) !== 'raw') {
       let cancelled = false;
@@ -387,15 +403,18 @@ export function ProductDetailSheet({
         ? apiRequest<StockRow[]>(`/api/stock?product_id=${product.id}`)
         : tab === 'used-in'
           ? apiRequest<UsedInEntry[]>(`/api/products/${product.id}/used-in`)
-          : apiRequest<{ items: StockMovement[]; total: number }>(
-              `/api/stock/movements?product_id=${product.id}&limit=100`,
-            );
+          : tab === 'sales'
+            ? apiRequest<SalesResponse>(`/api/sales?product_id=${product.id}&limit=100`)
+            : apiRequest<{ items: StockMovement[]; total: number }>(
+                `/api/stock/movements?product_id=${product.id}&limit=100`,
+              );
 
     req
       .then((data) => {
         if (cancelled) return;
         if (tab === 'stock') setStock(data as StockRow[]);
         else if (tab === 'used-in') setUsedIn(data as UsedInEntry[]);
+        else if (tab === 'sales') setSales((data as SalesResponse).items);
         else setMovements((data as { items: StockMovement[] }).items);
       })
       .catch((e: unknown) => {
@@ -502,6 +521,28 @@ export function ProductDetailSheet({
       setLocalSellPrice(parsed);
       setEditingSellPrice(false);
       notify('success', 'Sotuv narxi saqlandi.');
+      onSaved?.();
+    } catch (err: unknown) {
+      notify('error', err instanceof ApiError ? err.message : 'Xato yuz berdi.');
+    }
+  }
+
+  async function saveProdCost() {
+    if (!product) return;
+    const parsed = parseFloat(prodCostInput.replace(/\s/g, ''));
+    if (isNaN(parsed) || parsed < 0) {
+      notify('error', 'Noto\'g\'ri narx kiritildi.');
+      return;
+    }
+    try {
+      await apiRequest(`/api/products/${product.id}`, {
+        method: 'PATCH',
+        body: { production_cost: parsed },
+      });
+      setLocalProdCost(parsed);
+      setEditingProdCost(false);
+      notify('success', 'Ishlab chiqarish narxi saqlandi.');
+      onSaved?.();
     } catch (err: unknown) {
       notify('error', err instanceof ApiError ? err.message : 'Xato yuz berdi.');
     }
@@ -516,6 +557,8 @@ export function ProductDetailSheet({
   const canEditSellPrice = user?.role === 'pm' || user?.role === 'super_admin';
   // Displayed sell price: local override after save, else server value
   const displaySellPrice = localSellPrice !== undefined ? localSellPrice : (product.sell_price ?? null);
+  // Displayed production cost: local override after save, else server value
+  const displayProdCost = localProdCost !== undefined ? localProdCost : (product.production_cost ?? null);
 
   const category = deriveCategory(product);
   const style = PRODUCT_CATEGORY_STYLE[category];
@@ -646,6 +689,88 @@ export function ProductDetailSheet({
                         </button>
                       </div>
                     ) : null}
+                    {/* Ishlab chiqarish narxi — only for semi/finished, editable for pm/super_admin */}
+                    {isNonRaw && editingProdCost ? (
+                      <div className="flex flex-col gap-1">
+                        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Ishlab chiqarish narxi</p>
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            min="0"
+                            value={prodCostInput}
+                            onChange={(e) => setProdCostInput(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') void saveProdCost(); if (e.key === 'Escape') { setEditingProdCost(false); setProdCostPct(''); } }}
+                            autoFocus
+                            className="w-28 rounded-md border border-border bg-background px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                          />
+                          <button type="button" onClick={() => void saveProdCost()} className="rounded-md bg-primary px-2 py-1 text-xs text-primary-foreground hover:bg-primary/90">
+                            <Check className="size-3" />
+                          </button>
+                          <button type="button" onClick={() => { setEditingProdCost(false); setProdCostPct(''); }} className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent">
+                            <X className="size-3" />
+                          </button>
+                        </div>
+                        {displaySellPrice != null && displaySellPrice > 0 && (
+                          <div className="flex items-center gap-1">
+                            <span className="text-[10px] text-muted-foreground">sotuv narxidan</span>
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              step="0.1"
+                              placeholder="10"
+                              value={prodCostPct}
+                              onChange={(e) => {
+                                const pct = e.target.value;
+                                setProdCostPct(pct);
+                                const p = parseFloat(pct);
+                                if (!isNaN(p) && p >= 0) {
+                                  setProdCostInput(String(Math.round(displaySellPrice * p / 100)));
+                                }
+                              }}
+                              className="w-14 rounded-md border border-border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+                            />
+                            <span className="text-xs text-muted-foreground">%</span>
+                            {prodCostPct !== '' && !isNaN(parseFloat(prodCostPct)) && (
+                              <span className="text-xs text-violet-600 dark:text-violet-400">
+                                = {Math.round(displaySellPrice * parseFloat(prodCostPct) / 100).toLocaleString('uz-UZ')} so'm
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ) : isNonRaw && displayProdCost != null && displayProdCost > 0 ? (
+                      <div className="group relative">
+                        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Ishlab chiqarish narxi</p>
+                        <div className="flex items-center gap-1">
+                          <p className="text-base font-bold text-violet-600 dark:text-violet-400">
+                            {displayProdCost.toLocaleString('uz-UZ', { maximumFractionDigits: 0 })}
+                            <span className="ml-1 text-xs font-normal">so'm/{UNIT_LABELS[product.unit]}</span>
+                          </p>
+                          {canEditSellPrice && (
+                            <button
+                              type="button"
+                              onClick={() => { setProdCostInput(String(displayProdCost)); setEditingProdCost(true); }}
+                              className="rounded p-0.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-accent hover:text-foreground transition-opacity"
+                              title="Ishlab chiqarish narxini tahrirlash"
+                            >
+                              <Pencil className="size-3" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ) : isNonRaw && canEditSellPrice ? (
+                      <div>
+                        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Ishlab chiqarish narxi</p>
+                        <button
+                          type="button"
+                          onClick={() => { setProdCostInput(''); setEditingProdCost(true); }}
+                          className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          <Plus className="size-3" /> Narx qo'shish
+                        </button>
+                      </div>
+                    ) : null}
                     {hasCost && hasSell && (
                       <div>
                         <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Ustama</p>
@@ -764,6 +889,9 @@ export function ProductDetailSheet({
                     { key: 'stock', label: 'Qoldiqlar', icon: BarChart3 },
                     { key: 'orders', label: 'Zayavkalar', icon: ClipboardList },
                     { key: 'movements', label: 'Harakatlar', icon: Activity },
+                    ...(product.type === 'finished' || product.type === 'gp'
+                      ? [{ key: 'sales' as const, label: 'Sotuvlar', icon: ShoppingCart }]
+                      : []),
                     { key: 'used-in', label: 'Ishlatilgan', icon: Package },
                   ] as const
                 ).map(({ key, label, icon: Icon }) => (
@@ -817,6 +945,9 @@ export function ProductDetailSheet({
 
                 {!tabLoading && !tabErr && tab === 'movements' && (
                   <MovementsPanel movements={movements} unit={product.unit} />
+                )}
+                {!tabLoading && !tabErr && tab === 'sales' && (
+                  <SalesPanel sales={sales} unit={product.unit} />
                 )}
                 {!tabLoading && !tabErr && tab === 'used-in' && (
                   <UsedInPanel entries={usedIn} onProductClick={onProductClick} />
@@ -1166,24 +1297,10 @@ function OrdersPanel({
               {/* Action buttons */}
               {showActions && (
                 <div className="flex flex-wrap items-center gap-2 border-t border-border/50 bg-muted/20 px-4 py-2.5">
-                  {canAct && o.status === 'new' && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={isBusy}
-                      onClick={() => onTransition(o.id, 'in_progress')}
-                    >
-                      {isBusy ? (
-                        <Loader2 className="size-3.5 animate-spin" />
-                      ) : (
-                        <Play className="size-3.5" />
-                      )}
-                      Boshlash
-                    </Button>
-                  )}
-                  {canAct && o.status === 'in_progress' && (
+                  {canAct && (o.status === 'new' || o.status === 'in_progress') && (
                     <Button
                       size="sm"
+                      className="bg-emerald-600 hover:bg-emerald-700 text-white"
                       disabled={isBusy}
                       onClick={() => onTransition(o.id, 'done')}
                     >
@@ -1192,18 +1309,7 @@ function OrdersPanel({
                       ) : (
                         <Check className="size-3.5" />
                       )}
-                      Yakunlash
-                    </Button>
-                  )}
-                  {canAct && (o.status === 'new' || o.status === 'in_progress') && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={isBusy}
-                      onClick={() => onTransition(o.id, 'cancelled')}
-                    >
-                      <X className="size-3.5" />
-                      Bekor
+                      Tayyor
                     </Button>
                   )}
                   {canEdit && (
@@ -1368,6 +1474,63 @@ function MovementsPanel({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/* ── Sotuvlar ── */
+function SalesPanel({ sales, unit }: { sales: SaleRow[] | null; unit: string }) {
+  if (sales === null) return null;
+
+  if (sales.length === 0) {
+    return (
+      <div className="flex flex-col items-center gap-2 py-16 text-muted-foreground">
+        <ShoppingCart className="size-10 opacity-20" />
+        <p className="text-sm">Bu mahsulot bo'yicha sotuv topilmadi.</p>
+      </div>
+    );
+  }
+
+  const unitLabel = UNIT_LABELS[unit as keyof typeof UNIT_LABELS] ?? unit;
+
+  return (
+    <div className="space-y-2">
+      {sales.map((s) => (
+        <div
+          key={s.id}
+          className="flex items-start gap-3 rounded-xl border border-l-4 border-destructive/40 bg-card/50 p-3"
+        >
+          <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-destructive/10 text-destructive">
+            <ShoppingCart className="size-4" />
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-sm font-medium">{s.store_name}</span>
+              <span className="shrink-0 text-base font-bold tabular-nums text-destructive">
+                −{Number(s.qty).toLocaleString('uz-UZ', { maximumFractionDigits: 4 })} {unitLabel}
+              </span>
+            </div>
+
+            <div className="mt-1 flex items-center justify-between gap-2">
+              <span className="text-xs text-muted-foreground">
+                {Number(s.price).toLocaleString('uz-UZ')} so'm
+              </span>
+              <span className="shrink-0 text-xs text-muted-foreground">
+                {new Date(s.sold_at).toLocaleDateString('uz-UZ', {
+                  year: 'numeric',
+                  month: '2-digit',
+                  day: '2-digit',
+                })}{' '}
+                {new Date(s.sold_at).toLocaleTimeString('uz-UZ', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </span>
+            </div>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
