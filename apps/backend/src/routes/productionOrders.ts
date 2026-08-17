@@ -220,6 +220,7 @@ productionOrdersRouter.get(
     const { rows } = await query<
       ProductionOrderRow & {
         product_name: string;
+        product_type: string;
         location_name: string | null;
         target_location_name: string | null;
         parent_target_location_name: string | null;
@@ -228,6 +229,7 @@ productionOrdersRouter.get(
     >(
       `SELECT ${qualifiedCols},
               p.name AS product_name,
+              p.type AS product_type,
               ll.name AS location_name,
               tl.name AS target_location_name,
               COALESCE(ptl.name, prl.name) AS parent_target_location_name,

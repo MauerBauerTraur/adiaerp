@@ -21,6 +21,7 @@ import { useToast } from '@/components/ui/toast';
 import { apiRequest, ApiError } from '@/lib/api-client';
 import type { DailyDispatchResponse, ProductionDispatch } from '@/lib/types';
 import { fmtQty } from './BomTree';
+import { buildDestinationContext, type DestinationContextData, type OrderInfo } from './dispatchContext';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -214,8 +215,6 @@ function PipelineStat({
 // ---------------------------------------------------------------------------
 // Global print — otdel bo'yicha: xomashyo + ishlab chiqarish + tushum
 // ---------------------------------------------------------------------------
-type OrderInfo = { id: number; product_id: number; product_name: string; qty: number; unit: string; location_id: number | null; location_name: string | null; product_type: string; production_cost: number | null; target_location_name: string | null; parent_production_order_id: number | null; parent_product_name: string | null; parent_unit: string | null; parent_qty: number | null; parent_production_cost: number | null; grandparent_production_order_id: number | null; grandparent_product_name: string | null; grandparent_unit: string | null; grandparent_qty: number | null; grandparent_production_cost: number | null };
-
 async function openGlobalPrint(
   items: ProductionDispatch[],
   dateStr: string,
@@ -251,14 +250,15 @@ async function openGlobalPrint(
   const ordersById = new Map(allOrders.map(o => [o.id, o]));
 
   // Group dispatch items by to_location (sex), tracking referenced production_order_ids
-  type SexEntry = { id: number | null; name: string; materials: Map<string, { unit: string; total: number }>; orderIds: Set<number> };
+  type SexEntry = { id: number | null; name: string; materials: Map<string, { unit: string; total: number }>; orderIds: Set<number>; items: ProductionDispatch[] };
   const sexMap = new Map<string, SexEntry>();
   for (const item of items) {
     const key = String(item.to_location_id ?? '__null__');
     const name = item.to_location_name ?? "Noma'lum sex";
-    if (!sexMap.has(key)) sexMap.set(key, { id: item.to_location_id ?? null, name, materials: new Map(), orderIds: new Set() });
+    if (!sexMap.has(key)) sexMap.set(key, { id: item.to_location_id ?? null, name, materials: new Map(), orderIds: new Set(), items: [] });
     const sex = sexMap.get(key)!;
     sex.orderIds.add(item.production_order_id);
+    sex.items.push(item);
     const p = sex.materials.get(item.product_name);
     if (!p) sex.materials.set(item.product_name, { unit: item.product_unit, total: item.qty_needed });
     else p.total += item.qty_needed;
@@ -295,55 +295,13 @@ async function openGlobalPrint(
         <tbody>${matRows}</tbody>
       </table>`;
 
-    // Split orders into zagotovkas and GP (final) products.
-    // Traverse full chain (ordersById) to find root GP for multi-level hierarchies.
-    function glGetRootGP(startId: number): { id: number; product_id: number | null; product_name: string; qty: number; unit: string; production_cost: number | null } {
-      let cur = ordersById.get(startId);
-      if (!cur) return { id: startId, product_id: null, product_name: '?', qty: 0, unit: '', production_cost: null };
-      const visited = new Set<number>();
-      while (cur.parent_production_order_id != null && !visited.has(cur.parent_production_order_id)) {
-        visited.add(cur.id);
-        const par = ordersById.get(cur.parent_production_order_id);
-        if (!par) {
-          if (cur.grandparent_production_order_id != null && cur.grandparent_product_name) {
-            return { id: cur.grandparent_production_order_id, product_id: null, product_name: cur.grandparent_product_name, qty: cur.grandparent_qty ?? cur.parent_qty ?? cur.qty, unit: cur.grandparent_unit ?? cur.parent_unit ?? cur.unit ?? '', production_cost: cur.grandparent_production_cost ?? cur.parent_production_cost ?? cur.production_cost };
-          }
-          return { id: cur.parent_production_order_id, product_id: null, product_name: cur.parent_product_name ?? cur.product_name, qty: cur.parent_qty ?? cur.qty, unit: cur.parent_unit ?? cur.unit ?? '', production_cost: cur.parent_production_cost ?? cur.production_cost };
-        }
-        cur = par;
-      }
-      return { id: cur.id, product_id: cur.product_id, product_name: cur.product_name, qty: cur.qty, unit: cur.unit ?? '', production_cost: cur.production_cost };
-    }
-    const glZagItems: { product_name: string; qty: number; unit: string }[] = [];
-    const glGpByName = new Map<string, { product_id: number | null; product_name: string; qty: number; unit: string; production_cost: number | null }>();
-    const seenGlRootIds = new Set<number>();
-    for (const ordId of sex.orderIds) {
-      const o = ordersById.get(ordId);
-      if (!o) continue;
-      if (o.product_type === 'semi') {
-        glZagItems.push({ product_name: o.product_name, qty: o.qty, unit: o.unit ?? '' });
-        if (o.parent_production_order_id != null) {
-          const root = glGetRootGP(o.parent_production_order_id);
-          if (!seenGlRootIds.has(root.id)) {
-            seenGlRootIds.add(root.id);
-            glGpByName.set(root.product_name, root);
-          }
-        }
-      } else {
-        const existing = glGpByName.get(o.product_name);
-        if (existing) { existing.qty += o.qty; }
-        else { glGpByName.set(o.product_name, { product_id: o.product_id, product_name: o.product_name, qty: o.qty, unit: o.unit ?? '', production_cost: o.production_cost }); }
-      }
-    }
-    // If semi items found but no GP resolved via parent chain, look for GP orders at this location
-    if (glZagItems.length > 0) {
-      for (const o of ordersById.values()) {
-        if (o.location_name === sex.name && (o.product_type === 'gp' || o.product_type === 'finished') && !glGpByName.has(o.product_name)) {
-          glGpByName.set(o.product_name, { product_id: o.product_id, product_name: o.product_name, qty: o.qty, unit: o.unit ?? '', production_cost: o.production_cost });
-        }
-      }
-    }
-    const glGpItems = [...glGpByName.values()];
+    // Split orders into zagotovkas and GP (final) products — shared pure
+    // helper (ADR-0016 chain walk), also drives the live <DestinationContext>.
+    const { zagotovkas: glZagItems, finishedGoods: glGpItems } = buildDestinationContext(
+      sex.items,
+      ordersById,
+      { locationName: sex.name },
+    );
 
     let zagSection = '';
     if (glZagItems.length > 0) {
@@ -445,6 +403,81 @@ async function apiBatchReceive(ids: number[]): Promise<number> {
     { method: 'PATCH', body: { ids } },
   );
   return result.received;
+}
+
+// ---------------------------------------------------------------------------
+// DestinationContext — live "this becomes that" chain, on-screen equivalent
+// of what openLocationPrint/openGlobalPrint only used to compute for PDF.
+// ---------------------------------------------------------------------------
+export function DestinationContext({
+  data,
+  defaultOpen = false,
+}: {
+  data: DestinationContextData;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const { zagotovkas, finishedGoods } = data;
+  if (zagotovkas.length === 0 && finishedGoods.length === 0) return null;
+
+  return (
+    <div className="mb-2 rounded-lg border border-dashed border-border/50 bg-muted/10 px-3 py-2">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-1.5 text-left text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+      >
+        {open ? <ChevronDown className="size-3 shrink-0" /> : <ChevronRight className="size-3 shrink-0" />}
+        <span>Bu nimaga aylanadi?</span>
+        {zagotovkas.length > 0 && (
+          <span className="text-muted-foreground/70">· {zagotovkas.length} zagotovka</span>
+        )}
+        {finishedGoods.length > 0 && (
+          <span className="text-muted-foreground/70">· {finishedGoods.length} tayyor mahsulot</span>
+        )}
+      </button>
+      {open && (
+        <div className="mt-2 space-y-2">
+          {zagotovkas.length > 0 && (
+            <div>
+              <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/70">
+                Zagotovkalar
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {zagotovkas.map((z) => (
+                  <span
+                    key={z.product_name}
+                    className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400"
+                  >
+                    {z.product_name}
+                    <span className="tabular-nums opacity-70">{fmtQty(z.qty, z.unit)}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          {finishedGoods.length > 0 && (
+            <div>
+              <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/70">
+                Tayyor mahsulot
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {finishedGoods.map((g) => (
+                  <span
+                    key={g.product_name}
+                    className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-400"
+                  >
+                    {g.product_name}
+                    <span className="tabular-nums opacity-70">{fmtQty(g.qty, g.unit)}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -691,6 +724,10 @@ function SexSection({
     : 'bg-blue-400';
 
   const productGroups = useMemo(() => groupByProduct(group.items), [group.items]);
+  const destinationData = useMemo(
+    () => buildDestinationContext(group.items, orderById, { locationName: group.locationName }),
+    [group.items, orderById, group.locationName],
+  );
 
   async function openLocationPrint() {
     const now = new Date();
@@ -719,60 +756,14 @@ function SexSection({
       </tr>`)
       .join('');
 
-    // Traverse orderById up to find the root (GP) order for any given order ID.
-    function getRootGP(startId: number): { id: number; product_id: number | null; product_name: string; qty: number; unit: string; production_cost: number | null } {
-      let cur: OrderInfo | undefined = orderById.get(startId);
-      if (!cur) return { id: startId, product_id: null, product_name: '?', qty: 0, unit: '', production_cost: null };
-      const visited = new Set<number>();
-      while (cur.parent_production_order_id != null && !visited.has(cur.parent_production_order_id)) {
-        visited.add(cur.id);
-        const par = orderById.get(cur.parent_production_order_id);
-        if (!par) {
-          if (cur.grandparent_production_order_id != null && cur.grandparent_product_name) {
-            return { id: cur.grandparent_production_order_id, product_id: null, product_name: cur.grandparent_product_name, qty: cur.grandparent_qty ?? cur.parent_qty ?? cur.qty, unit: cur.grandparent_unit ?? cur.parent_unit ?? cur.unit ?? '', production_cost: cur.grandparent_production_cost ?? cur.parent_production_cost ?? cur.production_cost };
-          }
-          return { id: cur.parent_production_order_id, product_id: null, product_name: cur.parent_product_name ?? cur.product_name, qty: cur.parent_qty ?? cur.qty, unit: cur.parent_unit ?? cur.unit ?? '', production_cost: cur.parent_production_cost ?? cur.production_cost };
-        }
-        cur = par;
-      }
-      return { id: cur.id, product_id: cur.product_id, product_name: cur.product_name, qty: cur.qty, unit: cur.unit ?? '', production_cost: cur.production_cost };
-    }
-
-    // Split referenced orders into zagotovkas (sub-orders) and GP (final) products.
-    const referencedOrderIds = new Set(group.items.map(i => i.production_order_id));
-    const zagByName = new Map<string, { product_name: string; qty: number; unit: string }>();
-    const gpByName = new Map<string, { product_id: number | null; product_name: string; qty: number; unit: string; production_cost: number | null }>();
-    const seenGpRootIds = new Set<number>();
-
-    for (const ordId of referencedOrderIds) {
-      const o = orderById.get(ordId);
-      if (!o) continue;
-      if (o.product_type === 'semi') {
-        const ez = zagByName.get(o.product_name);
-        if (ez) { ez.qty += o.qty; } else { zagByName.set(o.product_name, { product_name: o.product_name, qty: o.qty, unit: o.unit ?? '' }); }
-        if (o.parent_production_order_id != null) {
-          const root = getRootGP(o.parent_production_order_id);
-          if (!seenGpRootIds.has(root.id)) {
-            seenGpRootIds.add(root.id);
-            gpByName.set(root.product_name, root);
-          }
-        }
-      } else {
-        const existing = gpByName.get(o.product_name);
-        if (existing) { existing.qty += o.qty; }
-        else { gpByName.set(o.product_name, { product_id: o.product_id, product_name: o.product_name, qty: o.qty, unit: o.unit ?? '', production_cost: o.production_cost }); }
-      }
-    }
-    // Find gp/finished orders at this location (match by name — location_id may be BIGINT-as-string from pg)
-    for (const o of orderById.values()) {
-      if ((o.product_type === 'gp' || o.product_type === 'finished') && !gpByName.has(o.product_name)) {
-        if (o.location_name === group.locationName) {
-          gpByName.set(o.product_name, { product_id: o.product_id, product_name: o.product_name, qty: o.qty, unit: o.unit ?? '', production_cost: o.production_cost });
-        }
-      }
-    }
-    const zagItems = [...zagByName.values()];
-    const gpItems = [...gpByName.values()];
+    // Split referenced orders into zagotovkas (sub-orders) and GP (final)
+    // products — shared pure helper (ADR-0016 chain walk), also drives the
+    // live <DestinationContext> block rendered under this section.
+    const { zagotovkas: zagItems, finishedGoods: gpItems } = buildDestinationContext(
+      group.items,
+      orderById,
+      { locationName: group.locationName },
+    );
 
     // Fetch production_cost by product name (product_id may be undefined due to BIGINT serialisation quirk)
     const locCostByName = new Map<string, number | null>();
@@ -1005,7 +996,8 @@ function SexSection({
         ) : null}
       </div>
 
-      {/* Product rows */}
+      {/* Product rows — xomashyo ro'yxati tepada, "bu nimaga aylanadi"
+          konteksti pastda (egasi so'ragan tartib). */}
       {open && (
         <div className="pl-5 pb-3 pt-1">
           {productGroups.map((pg) => (
@@ -1021,6 +1013,7 @@ function SexSection({
               onReceive={handleReceive}
             />
           ))}
+          <DestinationContext data={destinationData} />
         </div>
       )}
     </div>
@@ -1045,6 +1038,10 @@ function ProdManagerCards({
   const [busyItem, setBusyItem] = useState<number | null>(null);
 
   const productGroups = useMemo(() => groupByProduct(items), [items]);
+  const destinationData = useMemo(() => {
+    const locationName = items[0]?.to_location_name ?? null;
+    return buildDestinationContext(items, orderById, { locationName });
+  }, [items, orderById]);
 
   async function handleReceive(ids: number[]) {
     if (ids.length === 0) return;
@@ -1090,6 +1087,7 @@ function ProdManagerCards({
           onReceive={handleReceive}
         />
       ))}
+      <DestinationContext data={destinationData} defaultOpen />
     </div>
   );
 }

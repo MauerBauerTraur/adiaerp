@@ -448,6 +448,8 @@ export interface ProductionOrder {
    * column itself is optional.
    */
   product_name: string;
+  /** Product's type ('raw' | 'semi' | 'finished' | 'gp'). Embedded by `GET /api/production-orders`. */
+  product_type?: string;
   location_name: string;
   target_location_name: string | null;
   /** Parent GP's target_location_name — COALESCE(ptl.name, prl.name), falls back to parent's replenishment requester when no target set. */
