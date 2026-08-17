@@ -18,6 +18,7 @@ import { AppError } from '../errors/index.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize, authorizeWrite } from '../middleware/authorize.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
+import { isKaymakProduct } from '../lib/productCategory.js';
 import { writeAudit, poolRunner } from '../lib/audit.js';
 import {
   getPrincipal,
@@ -754,7 +755,9 @@ productionOrdersRouter.get(
     if (fromRaw && !datePattern.test(fromRaw)) throw AppError.validation('"from" must be YYYY-MM-DD.');
     if (toRaw && !datePattern.test(toRaw)) throw AppError.validation('"to" must be YYYY-MM-DD.');
 
-    const conditions: string[] = [];
+    // Semi-finished and Г/П products travel through production_dispatches too,
+    // but they are not xomashyo — this report counts raw materials only.
+    const conditions: string[] = [`p.type = 'raw'`];
     const params: string[] = [];
 
     if (fromRaw) {
@@ -784,6 +787,7 @@ productionOrdersRouter.get(
          SUM(pd.qty_needed)::text AS total_qty,
          COUNT(DISTINCT pd.production_order_id)::text AS order_count
        FROM production_dispatches pd
+       JOIN products p ON p.id = pd.product_id
        ${where}
        GROUP BY pd.product_id, pd.product_name, pd.product_unit
        ORDER BY SUM(pd.qty_needed) DESC`,
@@ -1796,7 +1800,13 @@ productionOrdersRouter.post(
         // Use brutto: the gross input amount the parent stage requires.
         const neededQty = node.brutto != null && node.brutto > 0 ? node.brutto : node.qty;
 
-        if (available >= neededQty) {
+        // The kaymak otdel works to order. Its stock figures are unreliable
+        // (they run negative across locations), and skipping the sub-order
+        // leaves the kaymak maker with no task at all for an order that does
+        // need kaymak. Owner decision — always raise it, full quantity.
+        const alwaysOrder = isKaymakProduct(node.component_name);
+
+        if (!alwaysOrder && available >= neededQty) {
           stockNotes.push({
             product_id: node.component_product_id,
             product_name: node.component_name,
@@ -1806,7 +1816,10 @@ productionOrdersRouter.post(
           continue;
         }
 
-        const subQty = neededQty - available;
+        // Stock never reduces a kaymak sub-order; for everything else the
+        // shortfall is what has to be produced. Guard the DB's qty > 0 check.
+        const subQty = alwaysOrder ? neededQty : neededQty - available;
+        if (subQty <= 0) continue;
         const subOrder = await withTransaction(async (tx) => {
           const { rows } = await tx.query<ProductionOrderRow>(
             `INSERT INTO production_orders

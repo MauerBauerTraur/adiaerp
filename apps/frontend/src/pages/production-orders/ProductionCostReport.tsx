@@ -187,6 +187,15 @@ function ProductRow({ p }: { p: ProductionCostProduct }) {
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
+
+type TypeFilter = '' | 'finished' | 'semi' | 'gp';
+
+/**
+ * The report opens on Готовая продукция only — semi-finished and intermediate
+ * rows are noise here. The filter still offers the wider options.
+ */
+const DEFAULT_TYPE_FILTER: TypeFilter = 'gp';
+
 export function ProductionCostReport() {
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -196,20 +205,20 @@ export function ProductionCostReport() {
   const [dateTo, setDateTo] = useState(todayIso());
   const [locationFilter, setLocationFilter] = useState('');
   const [productFilter, setProductFilter] = useState('');
-  const [typeFilter, setTypeFilter] = useState<'' | 'finished' | 'semi' | 'gp'>('');
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>(DEFAULT_TYPE_FILTER);
 
   const [filterOpen, setFilterOpen] = useState(false);
   const [draftDateFrom, setDraftDateFrom] = useState(firstOfMonth());
   const [draftDateTo, setDraftDateTo] = useState(todayIso());
   const [draftLocationFilter, setDraftLocationFilter] = useState('');
   const [draftProductFilter, setDraftProductFilter] = useState('');
-  const [draftTypeFilter, setDraftTypeFilter] = useState<'' | 'finished' | 'semi' | 'gp'>('');
+  const [draftTypeFilter, setDraftTypeFilter] = useState<TypeFilter>(DEFAULT_TYPE_FILTER);
 
   const activeCount =
     (dateFrom !== firstOfMonth() || dateTo !== todayIso() ? 1 : 0) +
     (locationFilter ? 1 : 0) +
     (productFilter ? 1 : 0) +
-    (typeFilter ? 1 : 0);
+    (typeFilter !== DEFAULT_TYPE_FILTER ? 1 : 0);
 
   function openFilter() {
     setDraftDateFrom(dateFrom);
@@ -234,7 +243,7 @@ export function ProductionCostReport() {
     setDraftDateTo(td); setDateTo(td);
     setDraftLocationFilter(''); setLocationFilter('');
     setDraftProductFilter(''); setProductFilter('');
-    setDraftTypeFilter(''); setTypeFilter('');
+    setDraftTypeFilter(DEFAULT_TYPE_FILTER); setTypeFilter(DEFAULT_TYPE_FILTER);
     setFilterOpen(false);
   }
 

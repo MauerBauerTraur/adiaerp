@@ -363,6 +363,20 @@ function DeptDetail({
 // ---------------------------------------------------------------------------
 // KremKaymokchiPage
 // ---------------------------------------------------------------------------
+
+/**
+ * This screen belongs to the kaymak maker specifically, so it is scoped to the
+ * kaymak family — "крем каймак", "крем каймак (какао)", "крем каймок (варёное)",
+ * "крем каймок с ичной". Both Cyrillic spellings (каймак / каймок) are in use.
+ *
+ * Other creams (крем масляный, крем творожный, баунти крем) and zagotovka work
+ * (зувала, бисквит, з/г …) are made elsewhere and have their own screens.
+ */
+export function isKaymakProduct(name: string): boolean {
+  const lower = name.toLowerCase();
+  return ['каймак', 'каймок', 'kaymak', 'kaymok'].some((needle) => lower.includes(needle));
+}
+
 export function KremKaymokchiPage() {
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const dateLabel = useMemo(() => {
@@ -391,7 +405,11 @@ export function KremKaymokchiPage() {
   const deptGroups = useMemo((): DeptGroup[] => {
     if (!orders) return [];
 
-    const subOrders = orders.filter((o) => o.parent_production_order_id != null);
+    // Only the kaymak family belongs here — see isKaymakProduct. Everything
+    // else the departments order is made on another screen.
+    const subOrders = orders.filter(
+      (o) => o.parent_production_order_id != null && isKaymakProduct(o.product_name),
+    );
 
     const deptMap = new Map<string, DeptGroup>();
     for (const sub of subOrders) {
