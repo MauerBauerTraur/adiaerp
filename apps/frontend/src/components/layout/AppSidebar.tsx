@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils';
 import {
   navSectionsForRole,
   resolveGroupLanding,
+  type NavGroupKey,
   type NavSection,
 } from '@/lib/navigation';
 import { ROLE_LABELS } from '@/lib/labels';
@@ -46,6 +47,12 @@ interface AppSidebarProps {
  * itself via the `<PageTabs />` component — they no longer live in the
  * sidebar.
  */
+/**
+ * Groups temporarily kept out of the sidebar. Their routes still resolve and
+ * `navSectionsForRole` is untouched — this only hides the rail icons.
+ */
+const HIDDEN_GROUPS: readonly NavGroupKey[] = ['forecasts'];
+
 export function AppSidebar({
   onNavigate,
   inDrawer = false,
@@ -54,7 +61,9 @@ export function AppSidebar({
 }: AppSidebarProps) {
   const { user, logout } = useAuth();
   const location = useLocation();
-  const sections = user ? navSectionsForRole(user.role) : [];
+  const sections = user
+    ? navSectionsForRole(user.role).filter((s) => !HIDDEN_GROUPS.includes(s.key))
+    : [];
   // Hover-to-peek (desktop): when the rail is pinned collapsed,
   // hovering it widens the panel as an overlay *without* shifting the
   // page content. Clicking the pin toggle then locks the wider view in

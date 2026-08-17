@@ -103,10 +103,19 @@ const LOC_TYPE_LABELS: Record<string, string> = {
   supply:            "Ta'minot",
 };
 
-export function StockReportPage() {
+/**
+ * `lockedView` pins the page to a single view and hides the view switcher —
+ * used by the standalone "Bozor ro'yxati" entry under Ishlab chiqarish.
+ */
+export function StockReportPage({ lockedView }: { lockedView?: ViewMode } = {}) {
   const { user } = useAuth();
-  const [viewMode, setViewMode] = useState<ViewMode>('harakat');
+  const [viewMode, setViewMode] = useState<ViewMode>(lockedView ?? 'harakat');
   const [period, setPeriod] = useState<Period>('oy');
+  // Custom range. When both ends are set they override the preset above; the
+  // backend then reports the balance as it stood at the end of `customTo`.
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
+  const customActive = customFrom !== '' && customTo !== '';
   const [locationId, setLocationId] = useState<number | 'all'>('all');
   const [activeTypes, setActiveTypes] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
@@ -195,10 +204,12 @@ export function StockReportPage() {
   // ── Harakat report ─────────────────────────────────────────────────
   const reportPath = useMemo(() => {
     if (viewMode !== 'harakat') return null;
-    const params = new URLSearchParams({ period });
+    const params = new URLSearchParams(
+      customActive ? { from: customFrom, to: customTo } : { period },
+    );
     if (locationId !== 'all') params.set('location_id', String(locationId));
     return `/api/stock/report?${params.toString()}`;
-  }, [viewMode, period, locationId]);
+  }, [viewMode, period, locationId, customActive, customFrom, customTo]);
 
   const { data: rows, isLoading, error } = useApiQuery<ReportRow[]>(reportPath);
 
@@ -283,13 +294,18 @@ export function StockReportPage() {
   return (
     <div className="flex flex-col gap-4 p-4 md:p-6">
       <PageHeader
-        title="Ostatka hisoboti"
-        description="Davr bo'yicha mahsulot kirim, sarflash va qoldig'i"
+        title={lockedView === 'bozor' ? "Bozor ro'yxati" : 'Ostatka hisoboti'}
+        description={
+          lockedView === 'bozor'
+            ? "Bozordan olinadigan xomashyo ro'yxati"
+            : "Davr bo'yicha mahsulot kirim, sarflash va qoldig'i"
+        }
       />
 
       {/* Filters */}
       <Card className="flex flex-wrap items-center gap-3 px-4 py-3">
-        {/* View mode toggle */}
+        {/* View mode toggle — hidden when the page is pinned to one view */}
+        {!lockedView && (
         <div className="flex items-center gap-1 rounded-lg bg-muted p-0.5">
           <button
             onClick={() => setViewMode('harakat')}
@@ -321,17 +337,8 @@ export function StockReportPage() {
           >
             Kamayayotgan xomashyo
           </button>
-          <button
-            onClick={() => setViewMode('bozor')}
-            className={`rounded-md px-3 py-1 text-sm font-medium transition-colors ${
-              viewMode === 'bozor'
-                ? 'bg-background text-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            Bozor ro'yxati
-          </button>
         </div>
+        )}
 
         {/* Period — only for harakat */}
         {viewMode === 'harakat' && (
@@ -339,9 +346,13 @@ export function StockReportPage() {
             {PERIOD_OPTIONS.map((opt) => (
               <button
                 key={opt.value}
-                onClick={() => setPeriod(opt.value)}
+                onClick={() => {
+                  setPeriod(opt.value);
+                  setCustomFrom('');
+                  setCustomTo('');
+                }}
                 className={`rounded-md px-3 py-1 text-sm font-medium transition-colors ${
-                  period === opt.value
+                  period === opt.value && !customActive
                     ? 'bg-background text-foreground shadow-sm'
                     : 'text-muted-foreground hover:text-foreground'
                 }`}
@@ -349,6 +360,42 @@ export function StockReportPage() {
                 {opt.label}
               </button>
             ))}
+          </div>
+        )}
+
+        {/* Custom date range — only for harakat. Both ends must be set before
+            it takes over from the preset. */}
+        {viewMode === 'harakat' && (
+          <div className="flex items-center gap-1.5">
+            <label className="text-xs text-muted-foreground">Dan</label>
+            <input
+              type="date"
+              value={customFrom}
+              max={customTo || undefined}
+              onChange={(e) => setCustomFrom(e.target.value)}
+              className="rounded-md border border-border bg-background px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+            <label className="text-xs text-muted-foreground">Gacha</label>
+            <input
+              type="date"
+              value={customTo}
+              min={customFrom || undefined}
+              onChange={(e) => setCustomTo(e.target.value)}
+              className="rounded-md border border-border bg-background px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+            {(customFrom || customTo) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setCustomFrom('');
+                  setCustomTo('');
+                }}
+                className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                title="Davrni tozalash"
+              >
+                Tozalash
+              </button>
+            )}
           </div>
         )}
 

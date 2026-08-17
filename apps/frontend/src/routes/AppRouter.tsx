@@ -223,6 +223,16 @@ export function AppRouter() {
           }
         />
         <Route
+          path="/bozor-royxati"
+          element={
+            <RoleRoute
+              allow={['super_admin', 'pm', 'production_manager', 'raw_warehouse_manager']}
+            >
+              <StockReportPage lockedView="bozor" />
+            </RoleRoute>
+          }
+        />
+        <Route
           path="/warehouse-dispatch"
           element={
             <RoleRoute allow={['super_admin', 'pm', 'raw_warehouse_manager', 'production_manager']}>

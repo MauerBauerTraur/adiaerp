@@ -515,23 +515,51 @@ stockRouter.get(
 
     const period = typeof req.query.period === 'string' ? req.query.period : 'oy';
     const now = new Date();
+
+    // An explicit `from`/`to` pair overrides the preset. `to` is inclusive of
+    // the whole day, so the exclusive upper bound is the next midnight.
+    const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+    const fromRaw = typeof req.query.from === 'string' && req.query.from !== '' ? req.query.from : undefined;
+    const toRaw = typeof req.query.to === 'string' && req.query.to !== '' ? req.query.to : undefined;
+    if (fromRaw && !datePattern.test(fromRaw)) throw AppError.validation('"from" must be YYYY-MM-DD.');
+    if (toRaw && !datePattern.test(toRaw)) throw AppError.validation('"to" must be YYYY-MM-DD.');
+    if (fromRaw && toRaw && fromRaw > toRaw) {
+      throw AppError.validation('"from" must not be after "to".');
+    }
+
     let fromDate: Date;
-    switch (period) {
-      case 'kun':
-        fromDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        break;
-      case 'hafta': {
-        const dow = now.getDay() === 0 ? 6 : now.getDay() - 1;
-        const mon = new Date(now);
-        mon.setDate(now.getDate() - dow);
-        fromDate = new Date(mon.getFullYear(), mon.getMonth(), mon.getDate());
-        break;
+    if (fromRaw) {
+      const [y, m, d] = fromRaw.split('-').map(Number) as [number, number, number];
+      fromDate = new Date(y, m - 1, d);
+    } else {
+      switch (period) {
+        case 'kun':
+          fromDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          break;
+        case 'hafta': {
+          const dow = now.getDay() === 0 ? 6 : now.getDay() - 1;
+          const mon = new Date(now);
+          mon.setDate(now.getDate() - dow);
+          fromDate = new Date(mon.getFullYear(), mon.getMonth(), mon.getDate());
+          break;
+        }
+        case 'yil':
+          fromDate = new Date(now.getFullYear(), 0, 1);
+          break;
+        default: // 'oy'
+          fromDate = new Date(now.getFullYear(), now.getMonth(), 1);
       }
-      case 'yil':
-        fromDate = new Date(now.getFullYear(), 0, 1);
-        break;
-      default: // 'oy'
-        fromDate = new Date(now.getFullYear(), now.getMonth(), 1);
+    }
+
+    // `stock` holds today's balance, so a historical `to` needs the closing
+    // figure rolled back: everything that moved after `to` is undone below.
+    // NULL means "up to now" — the roll-back aggregate is then empty and the
+    // report behaves exactly as it did before this parameter existed.
+    let toBound: Date | null = null;
+    if (toRaw) {
+      const [y, m, d] = toRaw.split('-').map(Number) as [number, number, number];
+      const next = new Date(y, m - 1, d + 1);
+      if (next < now) toBound = next;
     }
 
     type ReportRow = {
@@ -577,6 +605,44 @@ stockRouter.get(
            ) AS movement_sold_qty
          FROM stock_movements
          WHERE created_at >= $2
+           AND ($3::timestamptz IS NULL OR created_at < $3::timestamptz)
+           AND ($1::bigint IS NULL
+                OR from_location_id = $1::bigint
+                OR to_location_id = $1::bigint)
+         GROUP BY product_id
+       ),
+       -- Everything that moved AFTER the window. Subtracting it from today's
+       -- stock gives the balance as it stood at the end of the window.
+       after_mvmt AS (
+         SELECT
+           product_id,
+           SUM(
+             CASE
+               WHEN $1::bigint IS NULL AND reason IN ('production_output','purchase') THEN qty
+               WHEN $1::bigint IS NOT NULL AND to_location_id = $1::bigint
+                    AND reason IN ('production_output','purchase','transfer') THEN qty
+               ELSE 0
+             END
+           ) AS in_qty,
+           SUM(
+             CASE
+               WHEN $1::bigint IS NULL AND reason = 'production_input' THEN qty
+               WHEN $1::bigint IS NOT NULL AND from_location_id = $1::bigint
+                    AND reason = 'production_input' THEN qty
+               ELSE 0
+             END
+           ) AS used_qty,
+           SUM(
+             CASE
+               WHEN $1::bigint IS NULL AND reason = 'sale' THEN qty
+               WHEN $1::bigint IS NOT NULL AND from_location_id = $1::bigint
+                    AND reason = 'sale' THEN qty
+               ELSE 0
+             END
+           ) AS movement_sold_qty
+         FROM stock_movements
+         WHERE $3::timestamptz IS NOT NULL
+           AND created_at >= $3::timestamptz
            AND ($1::bigint IS NULL
                 OR from_location_id = $1::bigint
                 OR to_location_id = $1::bigint)
@@ -594,18 +660,29 @@ stockRouter.get(
          WHERE status = 'new'
            AND $1::bigint IS NULL
          GROUP BY product_id
+       ),
+       -- Balance at the end of the window. With no upper bound it is today's stock.
+       bal AS (
+         SELECT p.id AS product_id,
+                COALESCE(stk.closing_qty, 0)
+                  - COALESCE(am.in_qty, 0)
+                  + COALESCE(am.used_qty, 0)
+                  + COALESCE(am.movement_sold_qty, 0) AS closing_qty
+         FROM products p
+         LEFT JOIN stk        ON stk.product_id = p.id
+         LEFT JOIN after_mvmt am ON am.product_id = p.id
        )
        SELECT
          p.id   AS product_id,
          p.name AS product_name,
          p.unit AS product_unit,
          p.type AS product_type,
-         ROUND(COALESCE(stk.closing_qty, 0), 4) AS closing_qty,
+         ROUND(COALESCE(bal.closing_qty, 0), 4) AS closing_qty,
          ROUND(COALESCE(mvmt.in_qty, 0), 4)      AS in_qty,
          ROUND(COALESCE(mvmt.used_qty, 0), 4)    AS used_qty,
          ROUND(COALESCE(mvmt.movement_sold_qty, 0), 4) AS sold_qty,
          ROUND(GREATEST(0,
-           COALESCE(stk.closing_qty, 0)
+           COALESCE(bal.closing_qty, 0)
            - COALESCE(mvmt.in_qty, 0)
            + COALESCE(mvmt.used_qty, 0)
            + COALESCE(mvmt.movement_sold_qty, 0)
@@ -613,18 +690,18 @@ stockRouter.get(
          ROUND(COALESCE(prod.in_production_qty, 0), 4) AS in_production_qty
        FROM products p
        LEFT JOIN mvmt    ON mvmt.product_id    = p.id
-       LEFT JOIN stk     ON stk.product_id     = p.id
+       LEFT JOIN bal     ON bal.product_id     = p.id
        LEFT JOIN prod    ON prod.product_id    = p.id
        WHERE p.is_active = TRUE
          AND (
-           COALESCE(stk.closing_qty, 0) > 0
+           COALESCE(bal.closing_qty, 0) <> 0
            OR COALESCE(mvmt.in_qty, 0)   > 0
            OR COALESCE(mvmt.used_qty, 0) > 0
            OR COALESCE(mvmt.movement_sold_qty, 0) > 0
            OR COALESCE(prod.in_production_qty, 0) > 0
          )
        ORDER BY p.name`,
-      [locationId, fromDate.toISOString()],
+      [locationId, fromDate.toISOString(), toBound?.toISOString() ?? null],
     );
 
     res.status(200).json(rows);

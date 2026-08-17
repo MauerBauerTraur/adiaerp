@@ -204,12 +204,6 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         roles: ['super_admin', 'pm', 'supply_manager', 'raw_warehouse_manager'],
       },
       {
-        path: '/poster-supplies',
-        label: 'Poster postavkalar',
-        icon: Truck,
-        roles: ['super_admin', 'pm', 'raw_warehouse_manager'],
-      },
-      {
         path: '/sotuvlar',
         label: 'Sotuvlar',
         icon: ShoppingBag,
@@ -284,6 +278,24 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         icon: FlaskConical,
         roles: ['super_admin', 'pm', 'production_manager'],
       },
+      {
+        path: '/bozor-royxati',
+        label: "Bozor ro'yxati",
+        icon: ShoppingCart,
+        roles: ['super_admin', 'pm', 'production_manager', 'raw_warehouse_manager'],
+      },
+      {
+        path: '/poster-supplies',
+        label: 'Poster postavkalar',
+        icon: Truck,
+        roles: ['super_admin', 'pm', 'raw_warehouse_manager'],
+      },
+      {
+        path: '/reports/stock',
+        label: 'Ostatka hisoboti',
+        icon: BarChart3,
+        roles: MANAGER_ROLES,
+      },
     ],
   },
   {
@@ -304,12 +316,6 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: 'Foyda hisoboti',
         icon: BarChart2,
         roles: ['super_admin', 'pm'],
-      },
-      {
-        path: '/reports/stock',
-        label: 'Ostatka hisoboti',
-        icon: BarChart3,
-        roles: MANAGER_ROLES,
       },
       {
         path: '/locations',
