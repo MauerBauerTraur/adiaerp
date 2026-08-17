@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select } from '@/components/ui/select';
+import { ProductCombobox } from '@/components/ui/product-combobox';
 import { Textarea } from '@/components/ui/textarea';
 import {
   Table,
@@ -292,22 +293,18 @@ export function TransferPage() {
                     return (
                       <tr key={item.id} className={idx % 2 === 0 ? '' : 'bg-muted/20'}>
                         <td className="px-3 py-2">
-                          <Select
+                          <ProductCombobox
                             value={item.product_id}
-                            onChange={(e) => updateItem(item.id, { product_id: e.target.value })}
+                            onChange={(v) => updateItem(item.id, { product_id: v })}
                             disabled={!fromLocationId}
                             className="w-full min-w-[180px]"
-                          >
-                            <option value="">— Tanlang —</option>
-                            {opts.map((p) => {
+                            options={opts.map((p) => {
                               const s = fromStock?.find((r) => r.product_id === p.id);
                               const u = s ? (UNIT_LABELS[s.product_unit as keyof typeof UNIT_LABELS] ?? s.product_unit) : '';
                               const q = s ? ` (${formatQty(s.qty)} ${u})` : '';
-                              return (
-                                <option key={p.id} value={p.id}>{p.name}{q}</option>
-                              );
+                              return { value: String(p.id), label: `${p.name}${q}` };
                             })}
-                          </Select>
+                          />
                           {rowError && (
                             <p className="mt-1 text-xs text-destructive">{rowError}</p>
                           )}
