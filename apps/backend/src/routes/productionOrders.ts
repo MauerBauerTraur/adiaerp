@@ -27,6 +27,7 @@ import {
 } from '../lib/principal.js';
 import {
   asObject,
+  optionalNonNegativeNumber,
   optionalString,
   parseIdParam,
   parseOptionalIdParam,
@@ -39,6 +40,7 @@ import {
   PRODUCTION_ORDER_COLUMNS,
   type ProductionOrderRow,
 } from '../services/productionOrder.js';
+import { listOpenYieldDebts } from '../services/yieldDebt.js';
 import { advance } from '../services/replenishment.js';
 import { applyMovement } from '../services/stockMovement.js';
 import {
@@ -442,6 +444,26 @@ productionOrdersRouter.get(
     }
 
     res.status(200).json({ bom, dispatch, suggested_location_id });
+  }),
+);
+
+// GET /api/production-orders/yield-debts?location_id=
+// Must be before /:id. Open yield-debt ledger rows (migration 0060) — a
+// department owes N units of a product because a past "done" was recorded
+// with actual_qty < ordered qty.
+productionOrdersRouter.get(
+  '/yield-debts',
+  authenticate,
+  authorize('pm', 'production_manager', 'raw_warehouse_manager', 'central_warehouse_manager'),
+  asyncHandler(async (req, res) => {
+    const locationId = parseOptionalIdParam(
+      typeof req.query.location_id === 'string' ? req.query.location_id : undefined,
+      'location_id',
+    );
+    // Read-only — `query` structurally satisfies `TxClient` (same call
+    // signature), no transaction needed for a plain SELECT.
+    const debts = await listOpenYieldDebts({ query }, locationId);
+    res.status(200).json(debts);
   }),
 );
 
@@ -2000,6 +2022,10 @@ productionOrdersRouter.patch(
     const orderId = parseIdParam(req.params.id, 'id');
     const body = asObject(req.body);
     const nextStatus = requireEnum(body, 'status', ['in_progress', 'done', 'cancelled'] as const);
+    // Yield-debt ledger (migration 0060) — optional real produced qty when it
+    // differs from the ordered qty. Absent means "produced exactly as ordered"
+    // (legacy behaviour, no debt-ledger effect).
+    const actualQty = optionalNonNegativeNumber(body, 'actual_qty');
 
     const { rows: scopeRows } = await query<{ location_id: number }>(
       'SELECT location_id FROM production_orders WHERE id = $1',
@@ -2021,7 +2047,7 @@ productionOrdersRouter.patch(
       // If store allocations are defined, auto-transfer from target_location
       // to each store inside the same transaction (no human step needed).
       const { updated: result, hasAllocations } = await withTransaction(async (tx) => {
-        const updated = await finishProductionOrder(orderId, principal.userId, tx);
+        const updated = await finishProductionOrder(orderId, principal.userId, tx, actualQty);
         if (updated.replenishment_id !== null) {
           await advance(updated.replenishment_id, principal.userId, tx);
         }
