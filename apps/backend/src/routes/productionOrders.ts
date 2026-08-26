@@ -755,9 +755,11 @@ productionOrdersRouter.get(
     if (fromRaw && !datePattern.test(fromRaw)) throw AppError.validation('"from" must be YYYY-MM-DD.');
     if (toRaw && !datePattern.test(toRaw)) throw AppError.validation('"to" must be YYYY-MM-DD.');
 
-    // Semi-finished and Г/П products travel through production_dispatches too,
-    // but they are not xomashyo — this report counts raw materials only.
-    const conditions: string[] = [`p.type = 'raw'`];
+    // Raw materials plus in-house semi-finished inputs (крем каймак and the
+    // like) — both are consumed by production and belong in this report.
+    // Г/П and finished goods travel through production_dispatches too, but
+    // they are the output, not xomashyo.
+    const conditions: string[] = [`p.type IN ('raw', 'semi')`];
     const params: string[] = [];
 
     if (fromRaw) {
