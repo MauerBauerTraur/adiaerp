@@ -16,6 +16,7 @@ import { apiRequest, ApiError } from '@/lib/api-client';
 import {
   RECIPE_STAGE_LABELS,
   RECIPE_STAGE_ORDER,
+  RECIPE_STAGE_PICKABLE,
   UNIT_LABELS,
   PRODUCT_TYPE_LABELS,
 } from '@/lib/labels';
@@ -46,7 +47,7 @@ interface EditableLine {
 function normalizeStage(s: RecipeLine['stage']): RecipeStage {
   return s != null && (RECIPE_STAGE_ORDER as string[]).includes(s as string)
     ? (s as RecipeStage)
-    : 'other';
+    : 'base';
 }
 
 function emptyLine(): EditableLine {
@@ -219,8 +220,11 @@ export function RecipeDialog({
         notify('success', data.message ?? "Posterda bu mahsulot uchun retsept topilmadi.");
         return;
       }
+      // 'base' is what the hourly Poster sync writes (recipes.stage default), so a
+      // manual load lands on the same rows and the next bulk sync updates them in
+      // place instead of adding a second, differently-staged copy.
       setLines(data.lines.map((l) => ({
-        stage: 'other' as const,
+        stage: 'base' as const,
         component_product_id: String(l.component_product_id),
         brutto: l.brutto > 0 ? String(Math.round(l.brutto * 1e4) / 1e4) : '',
         qty_per_unit: String(Math.round(l.qty_per_unit * 1e4) / 1e4),
@@ -462,7 +466,12 @@ export function RecipeDialog({
                             }
                             className="h-8 text-xs"
                           >
-                            {RECIPE_STAGE_ORDER.map((s) => (
+                            {/* The three nakladnoy sections, plus this line's own
+                                legacy value so selecting nothing cannot change it. */}
+                            {(RECIPE_STAGE_PICKABLE.includes(line.stage)
+                              ? RECIPE_STAGE_PICKABLE
+                              : [...RECIPE_STAGE_PICKABLE, line.stage]
+                            ).map((s) => (
                               <option key={s} value={s}>
                                 {RECIPE_STAGE_LABELS[s]}
                               </option>

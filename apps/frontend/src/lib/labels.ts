@@ -75,19 +75,33 @@ export const UNIT_LABELS: Record<Unit, string> = {
  * catch-all used when the backend has not (yet) tagged a line with a stage.
  */
 export const RECIPE_STAGE_LABELS: Record<RecipeStage, string> = {
-  dough: 'Hamir',
-  cream: 'Krem',
-  decoration: 'Bezak',
-  other: 'Boshqa',
+  // Labelled by the nakladnoy section the value actually lands in
+  // (services/nakladnoy.ts sectionOf), so what the user picks is what they get.
+  base: 'Hamir',
+  decoration: 'Krem',
+  assembly: 'Bezak',
+  // Legacy values kept renderable so opening an old recipe never rewrites it.
+  dough: 'Hamir (eski)',
+  cream: 'Krem (eski)',
+  other: 'Hamir (belgilanmagan)',
 };
 
 /** Stable display order of BOM stages in the recipe modal. */
+/** Every value recipes.stage can hold — used to render/normalise, not to pick. */
 export const RECIPE_STAGE_ORDER: RecipeStage[] = [
+  'base',
+  'decoration',
+  'assembly',
   'dough',
   'cream',
-  'decoration',
   'other',
 ];
+
+/**
+ * What the recipe modal offers. One entry per nakladnoy section, so a hand-set
+ * stage always maps onto a section the nakladnoy prints.
+ */
+export const RECIPE_STAGE_PICKABLE: RecipeStage[] = ['base', 'decoration', 'assembly'];
 
 /**
  * EPIC 8.4 — nakladnoy section headings ("krem uchun", "hamir uchun"…).
@@ -95,10 +109,13 @@ export const RECIPE_STAGE_ORDER: RecipeStage[] = [
  * nakladnoy is self-describing (image19).
  */
 export const NAKLADNOY_SECTION_LABELS: Record<RecipeStage, string> = {
+  // Mirrors sectionOf in services/nakladnoy.ts.
+  base: 'Hamir uchun',
   dough: 'Hamir uchun',
+  other: 'Hamir uchun',
+  decoration: 'Krem uchun',
   cream: 'Krem uchun',
-  decoration: 'Bezak uchun',
-  other: 'Boshqa',
+  assembly: 'Bezak uchun',
 };
 
 /** EPIC 8.5 — kassa smenasi holati. */

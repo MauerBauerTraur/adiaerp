@@ -66,7 +66,8 @@ type RecipeRow = {
   readonly product_id: number;
   readonly component_product_id: number;
   readonly qty_per_unit: number;
-  readonly stage: 'base' | 'decoration' | 'assembly';
+  /** Every value recipes.stage can hold — sectionOf maps them all. */
+  readonly stage: 'base' | 'dough' | 'cream' | 'decoration' | 'assembly' | 'other';
   readonly component_type: 'raw' | 'semi' | 'finished';
   readonly component_name: string;
   readonly component_unit: string;
@@ -181,6 +182,9 @@ function expandComponent(
  *
  * Sectioning (ADR-0016 OQ3 — each finished cake points at its OWN semi
  * zagatovka via its decoration BOM):
+ *   Stage -> section: base/dough/other -> hamir, decoration/cream -> krem,
+ *   assembly -> bezak. Unknown stages fall back to hamir so no line is lost.
+ *
  *   - hamir = expansion of the `base` stage lines AND the zagatovka semi (the
  *             FIRST semi component in the decoration BOM) — both represent the
  *             dough/biscuit of the half-finished cake.
@@ -203,9 +207,24 @@ export function expandToNakladnoy(
   qty: number,
 ): NakladnoyLine[] {
   const root = tree.get(rootProductId) ?? [];
-  const baseLines = root.filter((r) => r.stage === 'base');
-  const decoLines = root.filter((r) => r.stage === 'decoration');
-  const asmLines = root.filter((r) => r.stage === 'assembly');
+  // A line's stage decides its section. Stages a user picks by hand in the
+  // recipe modal must land in the same three sections as the Poster-synced
+  // ones, and anything unrecognised falls back to hamir rather than vanishing
+  // from the nakladnoy — a dropped line is a material nobody issues.
+  const sectionOf = (stage: string): 'hamir' | 'krem' | 'bezak' => {
+    switch (stage) {
+      case 'decoration':
+      case 'cream':
+        return 'krem';
+      case 'assembly':
+        return 'bezak';
+      default: // 'base', 'dough', 'other', or anything added later
+        return 'hamir';
+    }
+  };
+  const baseLines = root.filter((r) => sectionOf(r.stage) === 'hamir');
+  const decoLines = root.filter((r) => sectionOf(r.stage) === 'krem');
+  const asmLines = root.filter((r) => sectionOf(r.stage) === 'bezak');
 
   // The zagatovka = the FIRST `semi` component in the decoration BOM (matches
   // `findZagatovkaComponent` in bom.ts; ADR-0016 OQ3). It belongs to the hamir

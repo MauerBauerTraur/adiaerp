@@ -101,6 +101,11 @@ export class AppError extends Error {
     return new AppError(ErrorCode.INTERNAL_ERROR, message);
   }
 
+  /** Poster answered with an error, timed out, or could not be reached. */
+  static posterSync(message: string): AppError {
+    return new AppError(ErrorCode.POSTER_SYNC_ERROR, message);
+  }
+
   static serviceUnavailable(message = 'Service is temporarily unavailable.'): AppError {
     return new AppError(ErrorCode.SERVICE_UNAVAILABLE, message);
   }

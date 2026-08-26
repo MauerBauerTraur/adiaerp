@@ -221,7 +221,13 @@ export interface UsedInEntry extends Product {
  * the wire — every UI surface treats a missing/`null`/unknown stage as
  * `other` and degrades gracefully (a single "Boshqa" section).
  */
-export type RecipeStage = 'dough' | 'cream' | 'decoration' | 'other';
+export type RecipeStage =
+  | 'base'
+  | 'dough'
+  | 'cream'
+  | 'decoration'
+  | 'assembly'
+  | 'other';
 
 /** A single BOM line — phase-1-mvp.md §4.3, extended in EPIC 1.5. */
 export interface RecipeLine {

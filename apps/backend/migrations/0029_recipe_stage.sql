@@ -24,7 +24,17 @@
 
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'recipe_stage') THEN
+  -- pg_type spans every schema, so an unqualified check finds the type in
+  -- public and skips creation when the migration is applied into an isolated
+  -- schema (the integration-test harness), leaving the ALTER below with no
+  -- type to reference. Scope the check to the schema being migrated.
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_type t
+    JOIN pg_namespace n ON n.oid = t.typnamespace
+    WHERE t.typname = 'recipe_stage'
+      AND n.nspname = current_schema()
+  ) THEN
     CREATE TYPE recipe_stage AS ENUM ('base', 'decoration', 'assembly');
   END IF;
 END$$;

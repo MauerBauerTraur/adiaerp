@@ -34,6 +34,7 @@ import {
   type SeedSelector,
 } from '../integrations/poster/seedSync.js';
 import { syncStockLeftovers } from '../integrations/poster/stockSync.js';
+import { redactUrl } from '../integrations/poster/syncLog.js';
 import { fallbackPollTransactions } from '../integrations/poster/salesSync.js';
 import { checkSoldProductsAndCreateOrders } from '../services/autoOrder.js';
 import { recalculateBomCosts } from '../services/costCalc.js';
@@ -233,6 +234,24 @@ posterIntegrationRouter.post(
 // review/import them into the ERP recipe without running a full sync.
 // -----------------------------------------------------------------------------
 
+/**
+ * Poster failures used to escape as raw PosterApiError, which the terminal
+ * error handler reports as a bare 500 "An unexpected error occurred." — the
+ * user could not tell a Poster outage from an ERP bug. Surface the real reason
+ * as a 502 instead.
+ */
+async function posterCall<T>(method: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    // The detail can be a fetch/URL error carrying ?token=… — every other
+    // Poster error path redacts before it is stored or shown, and this one is
+    // sent straight to the browser.
+    const detail = redactUrl(err instanceof Error ? err.message : String(err));
+    throw AppError.posterSync(`Poster (${method}): ${detail}`);
+  }
+}
+
 function normaliseQty(structureUnit: string, ingredientUnit: string, raw: number | string): number {
   const n = typeof raw === 'number' ? raw : Number(raw);
   if (!Number.isFinite(n) || n <= 0) return 0;
@@ -258,10 +277,14 @@ posterIntegrationRouter.get(
     // Load ERP product to find Poster IDs.
     const { rows: pRows } = await query<{
       id: number; name: string;
+      type: string;
+      batch_yield: string | null;
       poster_ingredient_id: number | null;
       poster_product_id: number | null;
     }>(
-      'SELECT id, name, poster_ingredient_id, poster_product_id FROM products WHERE id = $1',
+      `SELECT id, name, type::text AS type, batch_yield::text AS batch_yield,
+              poster_ingredient_id, poster_product_id
+         FROM products WHERE id = $1`,
       [productId],
     );
     const erp = pRows[0];
@@ -314,34 +337,56 @@ posterIntegrationRouter.get(
       }
     }
 
+    // A Poster type=2 product (a stocked menu item) carries BOTH ids, so testing
+    // poster_ingredient_id first used to send every finished product down the
+    // prepack branch, where it is never found — the menu branch was unreachable
+    // and the button silently returned an empty recipe. Try the prepack lookup
+    // when there is an ingredient id, but fall through to the menu when the
+    // prepack does not exist.
+    let resolved = false;
+
     if (erp.poster_ingredient_id !== null) {
-      // It's a prepack — fetch all prepacks and find this one.
-      const prepacks = await client.getPrepacks();
+      const prepacks = await posterCall('menu.getPrepacks', () => client.getPrepacks());
       const pp = prepacks.find((p) => Number(p.ingredient_id) === erp.poster_ingredient_id);
-      if (!pp) {
-        res.status(200).json({ lines: [], not_found: [], message: 'Product not found in Poster prepacks.' });
-        return;
+      if (pp) {
+        const batchYield = Number(pp.out) > 0 ? Number(pp.out) / 1000 : 1;
+        for (const ing of pp.ingredients ?? []) {
+          const pid = Number(ing.ingredient_id);
+          if (!Number.isInteger(pid) || pid <= 0) continue;
+          await resolveIngredient(pid, ing.ingredient_name, String(ing.structure_unit ?? ''), String(ing.ingredient_unit ?? ''), ing.structure_brutto, ing.structure_netto ?? ing.structure_brutto, batchYield, String(ing.structure_type ?? '1'));
+        }
+        resolved = true;
       }
-      const batchYield = Number(pp.out) > 0 ? Number(pp.out) / 1000 : 1;
-      for (const ing of pp.ingredients ?? []) {
-        const pid = Number(ing.ingredient_id);
-        if (!Number.isInteger(pid) || pid <= 0) continue;
-        await resolveIngredient(pid, ing.ingredient_name, String(ing.structure_unit ?? ''), String(ing.ingredient_unit ?? ''), ing.structure_brutto, ing.structure_netto ?? ing.structure_brutto, batchYield, String(ing.structure_type ?? '1'));
-      }
-    } else if (erp.poster_product_id !== null) {
-      // It's a menu product.
-      const mp = await client.getProduct(erp.poster_product_id);
+    }
+
+    if (!resolved && erp.poster_product_id !== null) {
+      const mp = await posterCall('menu.getProduct', () => client.getProduct(erp.poster_product_id as number));
       if (!mp) {
         res.status(200).json({ lines: [], not_found: [], message: 'Product not found in Poster menu.' });
         return;
       }
+      // A menu product's lines are per unit (divisor 1). But a prepack whose
+      // record has dropped out of getPrepacks reaches this branch too, and its
+      // Poster lines are per BATCH — dividing by 1 would overstate every
+      // quantity by the batch size, so use the yield stored on the row.
+      const storedYield = Number(erp.batch_yield ?? 0);
+      const menuYield = erp.type === 'semi' && storedYield > 0 ? storedYield : 1;
       for (const ing of mp.ingredients ?? []) {
         const pid = Number(ing.ingredient_id);
         if (!Number.isInteger(pid) || pid <= 0) continue;
-        await resolveIngredient(pid, ing.ingredient_name, String(ing.structure_unit ?? ''), String(ing.ingredient_unit ?? ''), ing.structure_brutto, ing.structure_netto ?? ing.structure_brutto, 1, String(ing.structure_type ?? '1'));
+        await resolveIngredient(pid, ing.ingredient_name, String(ing.structure_unit ?? ''), String(ing.ingredient_unit ?? ''), ing.structure_brutto, ing.structure_netto ?? ing.structure_brutto, menuYield, String(ing.structure_type ?? '1'));
       }
-    } else {
-      res.status(200).json({ lines: [], not_found: [], message: 'Product has no Poster link (poster_ingredient_id and poster_product_id are both null).' });
+      resolved = true;
+    }
+
+    if (!resolved) {
+      res.status(200).json({
+        lines: [],
+        not_found: [],
+        message: erp.poster_ingredient_id === null && erp.poster_product_id === null
+          ? 'Product has no Poster link (poster_ingredient_id and poster_product_id are both null).'
+          : 'Product not found in Poster prepacks or menu.',
+      });
       return;
     }
 

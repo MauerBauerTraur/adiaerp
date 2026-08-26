@@ -666,7 +666,10 @@ productsRouter.put(
     }
 
     // Validate every line and collect (component_product_id, qty_per_unit, brutto, stage).
-    const VALID_STAGES = ['dough', 'cream', 'decoration', 'other'] as const;
+    // Every value recipes.stage can hold. 'base' | 'decoration' | 'assembly' are
+    // what the Poster sync and nakladnoy use; coercing them to 'other' on save
+    // silently rewrote bulk-synced recipes just for being opened.
+    const VALID_STAGES = ['base', 'dough', 'cream', 'decoration', 'assembly', 'other'] as const;
     const items: { componentId: number; qtyPerUnit: number; brutto: number; stage: string }[] = [];
     const seen = new Set<number>();
     for (const raw of rawItems) {
@@ -677,8 +680,9 @@ productsRouter.put(
       }
       const qtyPerUnit = requirePositiveNumber(line, 'qty_per_unit');
       const brutto = requireNonNegativeNumber(line, 'brutto');
-      const stageRaw = optionalString(line, 'stage') ?? 'other';
-      const stage = (VALID_STAGES as readonly string[]).includes(stageRaw) ? stageRaw : 'other';
+      // Default to the sync's value so a hand-saved line matches a synced one.
+      const stageRaw = optionalString(line, 'stage') ?? 'base';
+      const stage = (VALID_STAGES as readonly string[]).includes(stageRaw) ? stageRaw : 'base';
       if (componentId === productId) {
         throw AppError.validation('A product cannot be a component of itself.');
       }
