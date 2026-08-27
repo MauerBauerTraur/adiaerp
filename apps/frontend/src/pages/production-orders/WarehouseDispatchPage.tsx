@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  LayoutGrid,
   Loader2,
   PackageCheck,
   Printer,
@@ -21,7 +22,7 @@ import { useToast } from '@/components/ui/toast';
 import { apiRequest, ApiError } from '@/lib/api-client';
 import type { DailyDispatchResponse, ProductionDispatch } from '@/lib/types';
 import { fmtQty } from './BomTree';
-import { buildDestinationContext, type DestinationContextData, type OrderInfo } from './dispatchContext';
+import { buildDestinationContext, buildDispatchMatrix, type DestinationContextData, type OrderInfo } from './dispatchContext';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -215,6 +216,96 @@ function PipelineStat({
 // ---------------------------------------------------------------------------
 // Global print — otdel bo'yicha: xomashyo + ishlab chiqarish + tushum
 // ---------------------------------------------------------------------------
+/**
+ * Cross-department matrix: one row per raw material, one column per sex, the
+ * quantity in the cell. This is the sheet the warehouse used to keep by hand —
+ * it answers "how much flour do I weigh out in total, and who gets it" in a
+ * single glance, which the per-sex sheets cannot.
+ */
+function openMatrixPrint(items: ProductionDispatch[], dateStr: string) {
+  const fmt = (n: number) =>
+    n === 0 ? '' : (n % 1 === 0 ? String(n) : n.toFixed(3).replace(/\.?0+$/, ''));
+
+  const { sexes, rows: ordered, sexTotals, grandTotal } = buildDispatchMatrix(items);
+
+  const body = ordered
+    .map(
+      (r, i) => `<tr${i % 2 ? ' class="alt"' : ''}>
+        <td class="idx">${i + 1}</td>
+        <td class="name">${r.product_name}</td>
+        <td class="unit">${r.unit}</td>
+        ${sexes
+          .map((sx) => {
+            const v = r.bySex.get(sx) ?? 0;
+            return `<td class="num${v === 0 ? ' zero' : ''}">${v === 0 ? '·' : fmt(v)}</td>`;
+          })
+          .join('')}
+        <td class="num total">${fmt(r.total)}</td>
+      </tr>`,
+    )
+    .join('');
+
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Xomashyo — umumiy taqsimot ${dateStr}</title>
+<style>
+  @page { size: A4 landscape; margin: 10mm; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color: #111; margin: 0; }
+  header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
+  h1 { font-size: 16px; margin: 0; letter-spacing: -.2px; }
+  .sub { font-size: 11px; color: #666; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { border: 1px solid #e3e3e3; padding: 5px 7px; font-size: 11px; }
+  thead th {
+    background: #f4f6f8; font-weight: 600; text-align: center; font-size: 10px;
+    text-transform: uppercase; letter-spacing: .3px; color: #333;
+    /* Long sex names must not blow the column width out on a wide sheet. */
+    max-width: 90px; overflow-wrap: anywhere;
+  }
+  thead th.left { text-align: left; }
+  tbody tr.alt { background: #fafbfc; }
+  td.idx { width: 26px; text-align: right; color: #999; font-variant-numeric: tabular-nums; }
+  td.name { font-weight: 500; }
+  td.unit { width: 38px; color: #666; text-align: center; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.num.zero { color: #ccc; text-align: center; }
+  td.total, th.total { background: #fff8e6; font-weight: 700; }
+  tfoot td { border-top: 2px solid #999; font-weight: 700; background: #f4f6f8; }
+  thead { display: table-header-group; }
+  tr { break-inside: avoid; }
+</style></head><body>
+<header>
+  <h1>Xomashyo — umumiy taqsimot</h1>
+  <span class="sub">${dateStr} · ${ordered.length} ta xomashyo · ${sexes.length} ta sex</span>
+</header>
+<table>
+  <thead><tr>
+    <th class="left">#</th>
+    <th class="left">Xomashyo</th>
+    <th>Birlik</th>
+    ${sexes.map((sx) => `<th>${sx}</th>`).join('')}
+    <th class="total">Jami</th>
+  </tr></thead>
+  <tbody>${body}</tbody>
+  <tfoot><tr>
+    <td></td>
+    <td>JAMI (pozitsiya)</td>
+    <td></td>
+    ${sexes
+      .map((_, i) => `<td class="num">${sexTotals[i] === 0 ? '·' : fmt(sexTotals[i] as number)}</td>`)
+      .join('')}
+    <td class="num total">${fmt(grandTotal)}</td>
+  </tr></tfoot>
+</table>
+<script>window.onload=function(){window.print()}<\/script>
+</body></html>`;
+
+  const w = window.open('', '_blank');
+  if (!w) return;
+  w.document.write(html);
+  w.document.close();
+}
+
 async function openGlobalPrint(
   items: ProductionDispatch[],
   dateStr: string,
@@ -1320,6 +1411,22 @@ export function WarehouseDispatchPage({ productTypeFilter }: { productTypeFilter
               >
                 <Printer className="size-4" />
                 Chop etish
+              </Button>
+            )}
+            {dispatchItems.length > 0 && (
+              <Button
+                variant="outline"
+                className="gap-2"
+                title="Barcha sexlarga beriladigan xomashyo — bitta jadvalda"
+                onClick={() =>
+                  openMatrixPrint(
+                    dispatchItems,
+                    dateFrom === dateTo ? dateFrom : `${dateFrom} — ${dateTo}`,
+                  )
+                }
+              >
+                <LayoutGrid className="size-4" />
+                Umumiy jadval
               </Button>
             )}
           </div>

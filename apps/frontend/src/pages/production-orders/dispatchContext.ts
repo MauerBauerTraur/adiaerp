@@ -124,7 +124,20 @@ export function buildDestinationContext(
   const referencedOrderIds = new Set(items.map((i) => i.production_order_id));
   const zagByName = new Map<string, DestinationZagotovka>();
   const gpByName = new Map<string, DestinationFinishedGood>();
-  const seenGpRootIds = new Set<number>();
+  // Dedupe by ORDER id, not by product name. The same GP order can be reached
+  // twice — once because a raw line is dispatched against it directly, once as
+  // the root of a zagotovka that is also referenced — and adding it per arrival
+  // doubled the printed quantity. Two DIFFERENT orders for the same product
+  // must still sum, which is why the name map stays.
+  const countedGpOrderIds = new Set<number>();
+
+  function addFinishedGood(orderId: number, gp: DestinationFinishedGood): void {
+    if (countedGpOrderIds.has(orderId)) return;
+    countedGpOrderIds.add(orderId);
+    const existing = gpByName.get(gp.product_name);
+    if (existing) existing.qty += gp.qty;
+    else gpByName.set(gp.product_name, { ...gp });
+  }
 
   for (const ordId of referencedOrderIds) {
     const o = orderById.get(ordId);
@@ -138,38 +151,35 @@ export function buildDestinationContext(
       }
       if (o.parent_production_order_id != null) {
         const root = getRootGP(o.parent_production_order_id, orderById);
-        if (!seenGpRootIds.has(root.id)) {
-          seenGpRootIds.add(root.id);
-          gpByName.set(root.product_name, {
-            product_id: root.product_id,
-            product_name: root.product_name,
-            qty: root.qty,
-            unit: root.unit,
-            production_cost: root.production_cost,
-          });
-        }
-      }
-    } else {
-      const existing = gpByName.get(o.product_name);
-      if (existing) {
-        existing.qty += o.qty;
-      } else {
-        gpByName.set(o.product_name, {
-          product_id: o.product_id,
-          product_name: o.product_name,
-          qty: o.qty,
-          unit: o.unit ?? '',
-          production_cost: o.production_cost,
+        addFinishedGood(root.id, {
+          product_id: root.product_id,
+          product_name: root.product_name,
+          qty: root.qty,
+          unit: root.unit,
+          production_cost: root.production_cost,
         });
       }
+    } else {
+      addFinishedGood(o.id, {
+        product_id: o.product_id,
+        product_name: o.product_name,
+        qty: o.qty,
+        unit: o.unit ?? '',
+        production_cost: o.production_cost,
+      });
     }
   }
 
   const locationName = opts.locationName ?? null;
   if (locationName != null) {
     for (const o of orderById.values()) {
-      if ((o.product_type === 'gp' || o.product_type === 'finished') && !gpByName.has(o.product_name) && o.location_name === locationName) {
-        gpByName.set(o.product_name, {
+      if (
+        (o.product_type === 'gp' || o.product_type === 'finished') &&
+        !gpByName.has(o.product_name) &&
+        !countedGpOrderIds.has(o.id) &&
+        o.location_name === locationName
+      ) {
+        addFinishedGood(o.id, {
           product_id: o.product_id,
           product_name: o.product_name,
           qty: o.qty,
@@ -184,4 +194,54 @@ export function buildDestinationContext(
     zagotovkas: [...zagByName.values()],
     finishedGoods: [...gpByName.values()],
   };
+}
+
+/** One row of the cross-department matrix: a material and its per-sex split. */
+export interface DispatchMatrixRow {
+  product_name: string;
+  unit: string;
+  /** Quantity per sex name; a sex absent from the map gets nothing. */
+  bySex: Map<string, number>;
+  total: number;
+}
+
+export interface DispatchMatrix {
+  /** Sex names, sorted — the column order. */
+  sexes: string[];
+  /** Rows sorted by material name. */
+  rows: DispatchMatrixRow[];
+  /** Column totals, aligned with `sexes`. */
+  sexTotals: number[];
+  grandTotal: number;
+}
+
+/**
+ * Pivot dispatch items into material x sex. The warehouse weighs each material
+ * out once for the whole day, so it needs the row total as much as the split.
+ *
+ * Quantities are summed per (material, sex); a material dispatched to the same
+ * sex from several orders appears once, with the sum.
+ */
+export function buildDispatchMatrix(items: ProductionDispatch[]): DispatchMatrix {
+  const rowByName = new Map<string, DispatchMatrixRow>();
+  const sexNames = new Set<string>();
+
+  for (const it of items) {
+    const sex = it.to_location_name ?? "Noma'lum";
+    sexNames.add(sex);
+    let row = rowByName.get(it.product_name);
+    if (!row) {
+      row = { product_name: it.product_name, unit: it.product_unit, bySex: new Map(), total: 0 };
+      rowByName.set(it.product_name, row);
+    }
+    row.bySex.set(sex, (row.bySex.get(sex) ?? 0) + it.qty_needed);
+    row.total += it.qty_needed;
+  }
+
+  const sexes = [...sexNames].sort((a, b) => a.localeCompare(b));
+  const rows = [...rowByName.values()].sort((a, b) => a.product_name.localeCompare(b.product_name));
+  const sexTotals = sexes.map((sx) => rows.reduce((sum, r) => sum + (r.bySex.get(sx) ?? 0), 0));
+  const grandTotal = rows.reduce((sum, r) => sum + r.total, 0);
+
+  return { sexes, rows, sexTotals, grandTotal };
 }
