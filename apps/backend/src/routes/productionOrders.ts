@@ -18,7 +18,6 @@ import { AppError } from '../errors/index.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize, authorizeWrite } from '../middleware/authorize.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
-import { isKaymakProduct } from '../lib/productCategory.js';
 import { writeAudit, poolRunner } from '../lib/audit.js';
 import {
   getPrincipal,
@@ -1802,25 +1801,28 @@ productionOrdersRouter.post(
         // Use brutto: the gross input amount the parent stage requires.
         const neededQty = node.brutto != null && node.brutto > 0 ? node.brutto : node.qty;
 
-        // The kaymak otdel works to order. Its stock figures are unreliable
-        // (they run negative across locations), and skipping the sub-order
-        // leaves the kaymak maker with no task at all for an order that does
-        // need kaymak. Owner decision — always raise it, full quantity.
-        const alwaysOrder = isKaymakProduct(node.component_name);
-
-        if (!alwaysOrder && available >= neededQty) {
+        // Owner decision 2026-09-09: every semi-finished component gets its own
+        // sub-order, whatever the stock says. Skipping on stock hid the whole
+        // branch — its raw materials never reached the dispatch sheet, so the
+        // sex was asked to produce something with nothing issued for it. Stock
+        // figures cannot carry that decision either: they run negative across
+        // locations (тесто сслойка: -27.35 overall, +4.53 at its own sex), so
+        // "there is enough" is not a fact we can rely on.
+        //
+        // Still recorded so the UI can show what was already on hand.
+        if (available >= neededQty) {
           stockNotes.push({
             product_id: node.component_product_id,
             product_name: node.component_name,
             available,
             needed: neededQty,
           });
-          continue;
         }
 
-        // Stock never reduces a kaymak sub-order; for everything else the
-        // shortfall is what has to be produced. Guard the DB's qty > 0 check.
-        const subQty = alwaysOrder ? neededQty : neededQty - available;
+        // The full recipe amount, not the shortfall — the same reasoning: a
+        // quantity derived from unreliable stock is worse than the one the
+        // recipe states. Guards the DB's qty > 0 check.
+        const subQty = neededQty;
         if (subQty <= 0) continue;
         const subOrder = await withTransaction(async (tx) => {
           const { rows } = await tx.query<ProductionOrderRow>(

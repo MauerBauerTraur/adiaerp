@@ -66,17 +66,6 @@ export function effectiveType(name: string, type: ProductType): ProductType {
   return type;
 }
 
-/**
- * The kaymak family — "крем каймак", "крем каймак (какао)", "крем каймок
- * (варёное)", "крем каймок с ичной". Both Cyrillic spellings are in use.
- *
- * MIRRORS `isKaymakProduct` in the frontend KremKaymokchiPage.
- */
-export function isKaymakProduct(name: string): boolean {
-  const lower = name.toLowerCase();
-  return ['каймак', 'каймок', 'kaymak', 'kaymok'].some((needle) => lower.includes(needle));
-}
-
 /** Derive the fine-grained category for a product (EPIC 1.3). */
 export function deriveCategory(name: string, type: ProductType): ProductCategory {
   if (type === 'gp') return 'finished';
