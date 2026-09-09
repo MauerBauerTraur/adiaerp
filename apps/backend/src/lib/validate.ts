@@ -79,6 +79,18 @@ export function requireNonNegativeNumber(obj: Record<string, unknown>, key: stri
   return n;
 }
 
+/** An optional finite number >= 0 — returns `undefined` when absent/null. */
+export function optionalNonNegativeNumber(obj: Record<string, unknown>, key: string): number | undefined {
+  const n = obj[key];
+  if (n === undefined || n === null) {
+    return undefined;
+  }
+  if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) {
+    throw AppError.validation(`Field "${key}" must be a number >= 0.`);
+  }
+  return n;
+}
+
 /** A required value that must be one of a fixed set. */
 export function requireEnum<T extends string>(
   obj: Record<string, unknown>,

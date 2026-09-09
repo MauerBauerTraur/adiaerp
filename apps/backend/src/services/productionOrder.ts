@@ -20,6 +20,7 @@ import { AppError } from '../errors/index.js';
 import { writeAudit } from '../lib/audit.js';
 import { applyMovement } from './stockMovement.js';
 import { readBaseBom, readFinalBom } from './bom.js';
+import { applyYieldDelta } from './yieldDebt.js';
 import {
   createNotificationsForRecipients,
   getLocationManager,
@@ -44,11 +45,14 @@ export type ProductionOrderRow = {
   stage_role: string;
   /** ADR-0016 — final order a zagatovka sub-order was raised for (else null). */
   parent_production_order_id: number | null;
+  /** Actual produced qty when it differs from the ordered `qty` (yield-debt ledger, migration 0060). Null until "done" records one. */
+  actual_qty: number | null;
 };
 
 export const PRODUCTION_ORDER_COLUMNS = `id, product_id, qty, location_id,
   target_location_id, deadline, status, replenishment_id, note, created_by,
-  created_at, updated_at, done_at, stage_role, parent_production_order_id`;
+  created_at, updated_at, done_at, stage_role, parent_production_order_id,
+  actual_qty`;
 
 /**
  * Run the atomic "done" flow for a production order WITHIN an existing
@@ -64,8 +68,14 @@ export async function consumeBomAndProduce(
   tx: TxClient,
   order: ProductionOrderRow,
   actorUserId: number | null,
-): Promise<{ inputMovementIds: number[]; outputMovementId: number }> {
+  actualQty?: number,
+): Promise<{ inputMovementIds: number[]; outputMovementId: number | null }> {
   const orderQty = Number(order.qty);
+  // BOM consumption always uses the ORDERED qty — that is what was actually
+  // dispatched to the department, regardless of how much finished product
+  // comes back (yield-debt ledger, migration 0060). Only the output
+  // movement reflects the real produced amount.
+  const outputQty = actualQty ?? orderQty;
 
   // Output goes directly to the target warehouse (maqsad ombor) when set.
   // If no target is specified, falls back to the production location.
@@ -108,18 +118,24 @@ export async function consumeBomAndProduce(
 
   // Produce the output into the target location (or the production location
   // itself when no explicit target is set — see outputLocationId above).
-  const { movementId: outputMovementId } = await applyMovement(
-    {
-      productId: order.product_id,
-      fromLocationId: null,
-      toLocationId: outputLocationId,
-      qty: orderQty,
-      reason: 'production_output',
-      actorUserId,
-      productionOrderId: order.id,
-    },
-    tx,
-  );
+  // A fully-short batch (actualQty === 0) has nothing to move — skip the
+  // output movement entirely (applyMovement rejects qty <= 0).
+  let outputMovementId: number | null = null;
+  if (outputQty > 0) {
+    const result = await applyMovement(
+      {
+        productId: order.product_id,
+        fromLocationId: null,
+        toLocationId: outputLocationId,
+        qty: outputQty,
+        reason: 'production_output',
+        actorUserId,
+        productionOrderId: order.id,
+      },
+      tx,
+    );
+    outputMovementId = result.movementId;
+  }
 
   return { inputMovementIds, outputMovementId };
 }
@@ -133,6 +149,7 @@ export async function finishProductionOrder(
   orderId: number,
   actorUserId: number | null,
   tx?: TxClient,
+  actualQty?: number,
 ): Promise<ProductionOrderRow> {
   const run = async (client: TxClient): Promise<ProductionOrderRow> => {
     // Lock the order row so two concurrent "done" calls serialize (no double
@@ -155,13 +172,22 @@ export async function finishProductionOrder(
       );
     }
 
-    await consumeBomAndProduce(client, order, actorUserId);
+    await consumeBomAndProduce(client, order, actorUserId, actualQty);
+
+    // Yield-debt ledger (migration 0060) — only touched when the caller
+    // explicitly reports a different actual_qty than what was ordered.
+    // Shortfall opens a debt; surplus settles open debts FIFO.
+    if (actualQty !== undefined) {
+      const delta = actualQty - Number(order.qty);
+      await applyYieldDelta(client, order.product_id, order.location_id, delta, order.id);
+    }
 
     const { rows: updated } = await client.query<ProductionOrderRow>(
-      `UPDATE production_orders SET status = 'done', done_at = now()
+      `UPDATE production_orders SET status = 'done', done_at = now(),
+              actual_qty = COALESCE($2, actual_qty)
        WHERE id = $1
        RETURNING ${PRODUCTION_ORDER_COLUMNS}`,
-      [orderId],
+      [orderId, actualQty ?? null],
     );
     const result = updated[0];
     if (result === undefined) {
