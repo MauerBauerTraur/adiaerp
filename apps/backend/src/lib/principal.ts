@@ -81,45 +81,32 @@ export function getEffectiveLocationIds(
 }
 
 /**
- * Hardened RBAC guard for **write** actions (owner-approved 2026-05-28).
+ * Location-ownership guard for **write** actions.
  *
- * Two enforcement axes — both must pass for the operator to proceed:
+ * A scoped operator must own the target location — `targetLocationId` must be
+ * one of `principal.locationIds`. The M:N assignment from F4.1 / ADR-0012
+ * applies: a manager assigned to multiple stores may act on any of them.
  *
- *   1. PM (super-admin) is **never** allowed to perform a business write
- *      action. The owner's rule: PM is read-and-recommend across the chain;
- *      every "do" must be the responsible location's operator. Even though
- *      PM has chain-wide visibility, it must NOT bypass `(product,location)`
- *      ownership for stock movements, replenishment cancels, production
- *      orders, purchase approvals, etc. Configuration endpoints (users,
- *      locations, products, admin, stock minmax) are explicitly exempt and
- *      gated by `authorize('pm', ...)` elsewhere.
+ * Super-admin roles (`super_admin`, `pm`) pass. The earlier rule
+ * (owner-approved 2026-05-28) made PM read-and-recommend and blocked it here;
+ * the owner replaced it on 2026-06-25 — PM adds/edits/deletes everything —
+ * which `authorizeWrite` already honoured. Leaving this guard on the old rule
+ * left the two halves contradicting each other: a PM sailed through
+ * `authorizeWrite` only to hit "PM has read-only access" from the handler, so
+ * whether a PM write worked came down to which endpoint it hit.
  *
- *   2. A scoped operator must own the target location — i.e.
- *      `targetLocationId` must be one of `principal.locationIds`. The M:N
- *      assignment from F4.1 / ADR-0012 still applies: a manager assigned to
- *      multiple stores may act on any of them.
- *
- * Both 403s are best-effort audit-logged so a downstream reviewer can spot
- * misconfigured operators (or attempted privilege escalation) in the audit
- * trail. Audit failures must not turn into 5xx, so the write is wrapped in
- * a catch-all.
+ * A foreign-location 403 is best-effort audit-logged so a downstream reviewer
+ * can spot misconfigured operators (or attempted privilege escalation) in the
+ * audit trail. Audit failures must not turn into 5xx, so the write is wrapped
+ * in a catch-all.
  */
 export async function requireLocationOperator(
   principal: AuthPrincipal,
   targetLocationId: number,
 ): Promise<void> {
+  // super_admin / pm act on any location (owner decision 2026-06-25).
   if (isSuperAdmin(principal)) {
-    await safeAudit({
-      actorUserId: principal.userId,
-      action: 'auth.forbidden.pm_write_blocked',
-      entity: 'principal',
-      entityId: principal.userId,
-      payload: { reason: 'pm_write_blocked', target_location_id: targetLocationId },
-      activeLocationId: principal.activeLocationId,
-    });
-    throw AppError.forbidden(
-      'PM has read-only access; write actions require an operator role for the responsible location.',
-    );
+    return;
   }
   if (!principal.locationIds.includes(targetLocationId)) {
     await safeAudit({

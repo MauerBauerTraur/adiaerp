@@ -259,8 +259,8 @@ replenishmentRouter.post(
 
     // Spec §6 W(bog'liq) — a scoped manager must be linked to the request
     // (requester/target, or indirectly via a linked production / purchase
-    // order). authorizeWrite already filtered out PM and unallowed roles;
-    // the remaining principals are all scoped operators.
+    // order). super_admin / pm are chain-wide and own no location, so they
+    // skip the link check (owner decision 2026-06-25).
     const { rows } = await query<{
       requester_location_id: number;
       target_location_id: number | null;
@@ -278,7 +278,8 @@ replenishmentRouter.post(
     }
     // Any of the operator's assigned locations may justify the action —
     // M:N (ADR-0012).
-    const allowed = await principalTouchesRequest(r, principal.locationIds);
+    const allowed =
+      isSuperAdmin(principal) || (await principalTouchesRequest(r, principal.locationIds));
     if (!allowed) {
       throw AppError.forbidden('You may only advance requests that touch your location.');
     }

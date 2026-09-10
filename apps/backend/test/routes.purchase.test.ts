@@ -125,7 +125,7 @@ describe('POST /api/purchase-orders — validation + RBAC', () => {
     expect(res.status).toBe(422);
   });
 
-  it('PM is read-only — POST is 403 (no super-admin bypass)', async () => {
+  it('PM may raise a purchase order (owner decision 2026-06-25)', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const rawWh = await makeLocation(ctx.db, { type: 'raw_warehouse' });
     const product = await makeProduct(ctx.db, { type: 'raw' });
@@ -133,8 +133,7 @@ describe('POST /api/purchase-orders — validation + RBAC', () => {
       .post('/api/purchase-orders')
       .set('Authorization', `Bearer ${pm.token}`)
       .send({ product_id: product, qty: 5, target_location_id: rawWh });
-    expect(res.status).toBe(403);
-    expect(res.body.error?.code).toBe('FORBIDDEN');
+    expect(res.status).toBe(201);
   });
 
   it('a raw_warehouse_manager cannot create a PO (403)', async () => {
@@ -214,7 +213,7 @@ describe('POST /api/purchase-orders/:id/receive', () => {
     expect(res.body.purchase_order?.received_movement_id).not.toBe(null);
   });
 
-  it('PM is read-only — receive is 403 (no super-admin bypass)', async () => {
+  it('PM may receive an approved purchase order (owner decision 2026-06-25)', async () => {
     const supplyLoc = await makeLocation(ctx.db, { type: 'supply' });
     const rawWh = await makeLocation(ctx.db, { type: 'raw_warehouse' });
     const supplyMgr = await makeUser(ctx.db, { role: 'supply_manager', locationId: supplyLoc });
@@ -228,8 +227,7 @@ describe('POST /api/purchase-orders/:id/receive', () => {
     const res = await request(ctx.app)
       .post(`/api/purchase-orders/${id}/receive`)
       .set('Authorization', `Bearer ${pm.token}`);
-    expect(res.status).toBe(403);
-    expect(res.body.error?.code).toBe('FORBIDDEN');
+    expect(res.status).toBe(200);
   });
 
   it('rejects a draft PO with 422 from the service (cannot be received without approvals)', async () => {
@@ -302,7 +300,7 @@ describe('POST /api/purchase-orders/:id/reject', () => {
     expect(Number(audit.rows[0]?.n)).toBe(1);
   });
 
-  it('PM is read-only — reject is 403 (no super-admin bypass)', async () => {
+  it('PM may reject a purchase order (owner decision 2026-06-25)', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const rawWh = await makeLocation(ctx.db, { type: 'raw_warehouse' });
     const product = await makeProduct(ctx.db, { type: 'raw' });
@@ -311,8 +309,7 @@ describe('POST /api/purchase-orders/:id/reject', () => {
     const res = await request(ctx.app)
       .post(`/api/purchase-orders/${id}/reject`)
       .set('Authorization', `Bearer ${pm.token}`);
-    expect(res.status).toBe(403);
-    expect(res.body.error?.code).toBe('FORBIDDEN');
+    expect(res.status).toBe(200);
   });
 
   it('rejects a non-draft PO with 422 (status guard)', async () => {

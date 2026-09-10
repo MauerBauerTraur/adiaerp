@@ -161,7 +161,33 @@ async function seedWorld(): Promise<World> {
     [storeB, productCake, 4, 1000, 1002, 1],
   );
 
-  // sales_stats_daily — last 5 days for both stores.
+  // sales_chart source — `sales`, not `sales_stats_daily`. The chart reads the
+  // raw table so today's figures are live regardless of when the nightly
+  // aggregate last ran; seeding only the aggregate left the chart empty.
+  // Days 1..5 (the three rows above already cover today):
+  //   storeA 5..9 = 35, storeB 3..7 = 25.
+  for (let i = 0; i < 5; i++) {
+    await ctx.db.query(
+      `INSERT INTO sales (store_id, product_id, qty, price, sold_at,
+         poster_transaction_id, poster_line_id)
+       VALUES ($1, $2, $3, 1000, now() - ($4::int * interval '1 day'), $5, 1)`,
+      [storeA, productCake, 5 + i, i + 1, 2000 + i],
+    );
+    await ctx.db.query(
+      `INSERT INTO sales (store_id, product_id, qty, price, sold_at,
+         poster_transaction_id, poster_line_id)
+       VALUES ($1, $2, $3, 1000, now() - ($4::int * interval '1 day'), $5, 1)`,
+      [storeB, productCake, 3 + i, i + 1, 3000 + i],
+    );
+  }
+  // One row outside the 30d window — must NOT appear in sales_chart.
+  await ctx.db.query(
+    `INSERT INTO sales (store_id, product_id, qty, price, sold_at,
+       poster_transaction_id, poster_line_id)
+     VALUES ($1, $2, 99, 1000, now() - interval '45 days', 4000, 1)`,
+    [storeA, productCake],
+  );
+  // The nightly aggregate still gets its rows — other readers use it.
   for (let i = 0; i < 5; i++) {
     await ctx.db.query(
       `INSERT INTO sales_stats_daily (location_id, product_id, stat_date, qty_sold)
@@ -174,12 +200,6 @@ async function seedWorld(): Promise<World> {
       [storeB, productCake, i, 3 + i],
     );
   }
-  // One row outside the 30d window — must NOT appear in sales_chart.
-  await ctx.db.query(
-    `INSERT INTO sales_stats_daily (location_id, product_id, stat_date, qty_sold)
-     VALUES ($1, $2, CURRENT_DATE - 45, 99)`,
-    [storeA, productCake],
-  );
 
   // Notifications — three rows of mixed types/severities.
   await ctx.db.query(
@@ -233,8 +253,11 @@ describe('GET /api/dashboard/ecosystem', () => {
     expect(body.poster_status.last_sync_status).toBe('ok');
     expect(typeof body.poster_status.last_sync_at).toBe('string');
     expect(body.poster_status.sync_errors_24h).toBe(1);
-    expect(body.poster_status.sales_today_count).toBe(3);
-    expect(body.poster_status.sales_today_sum).toBe(9000); // revenue: (3+2+4) × price(1000)
+    // `sales_today_*` follows the requested ?range, so with range=month it
+    // covers today plus the five seeded days: 3 + (5 days × 2 stores) = 13
+    // lines, 69 units × price 1000.
+    expect(body.poster_status.sales_today_count).toBe(13);
+    expect(body.poster_status.sales_today_sum).toBe(69000);
 
     // chain_flow — one row per location, ordered by type:
     // raw_warehouse, production, supply, central_warehouse, store, store.
@@ -283,17 +306,17 @@ describe('GET /api/dashboard/ecosystem', () => {
     expect(sev.poster_sync_failed).toBe('danger');
     expect(sev.replenishment_created).toBe('info');
 
-    // sales_chart — last 30 days. Five distinct dates were seeded; the 45-day
+    // sales_chart — last 30 days: today plus the five seeded days. The 45-day
     // outlier MUST NOT appear. days[i].qty is the sum across both stores.
     const days = body.sales_chart.days;
     expect(Array.isArray(days)).toBe(true);
-    expect(days.length).toBe(5);
-    // qty_sold seeded as storeA(5..9 = 35) + storeB(3..7 = 25) = 60 total.
+    expect(days.length).toBe(6);
+    // today(3+2+4 = 9) + storeA(5..9 = 35) + storeB(3..7 = 25) = 69.
     const totalQty = days.reduce(
       (acc: number, d: { qty: number }) => acc + Number(d.qty),
       0,
     );
-    expect(totalQty).toBe(60);
+    expect(totalQty).toBe(69);
   });
 
   // F4.x — sex (production) nodes carry two extra KPIs the canvas surfaces
@@ -396,16 +419,17 @@ describe('GET /api/dashboard/ecosystem', () => {
       open_requests_count: 1,
     });
 
-    // sales_today_sum — only storeA sales (3 + 2 = 5 units × price 1000 = 5000).
-    expect(body.poster_status.sales_today_sum).toBe(5000);
-    expect(body.poster_status.sales_today_count).toBe(2);
+    // Only storeA's lines over the range: today(2 lines) + 5 seeded days = 7
+    // lines, 40 units × price 1000.
+    expect(body.poster_status.sales_today_sum).toBe(40000);
+    expect(body.poster_status.sales_today_count).toBe(7);
 
-    // sales_chart — only storeA's qty (5..9 = 35).
+    // sales_chart — only storeA's qty: today(3+2 = 5) + 5..9 (= 35) = 40.
     const totalQty = body.sales_chart.days.reduce(
       (acc: number, d: { qty: number }) => acc + Number(d.qty),
       0,
     );
-    expect(totalQty).toBe(35);
+    expect(totalQty).toBe(40);
   });
 
   it('returns an empty alerts feed when no notifications exist', async () => {

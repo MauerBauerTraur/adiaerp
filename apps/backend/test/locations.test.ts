@@ -206,15 +206,23 @@ describe('users RBAC (pm only)', () => {
     expect(list.status).toBe(403);
   });
 
-  it('rejects a too-short password (422) and a scoped role with no location (422)', async () => {
+  it('rejects a too-short password (422)', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const shortPw = await request(ctx.app)
       .post('/api/users')
       .set('Authorization', `Bearer ${pm.token}`)
       .send({ name: 'X', login: 'x1-user', password: 'short', role: 'pm' });
     expect(shortPw.status).toBe(422);
+  });
 
-    const noLoc = await request(ctx.app)
+  // The create form stopped sending a bo'g'in, so POST derives one from the
+  // role instead of refusing (commit adb62ba). `users.location_id` still
+  // drives every RBAC-scoped endpoint, so a scoped user must never land
+  // without one.
+  it('derives the location from the role when none is supplied (201)', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const store = await makeLocation(ctx.db, { type: 'store' });
+    const res = await request(ctx.app)
       .post('/api/users')
       .set('Authorization', `Bearer ${pm.token}`)
       .send({
@@ -223,6 +231,30 @@ describe('users RBAC (pm only)', () => {
         password: 'a-strong-pass',
         role: 'store_manager',
       });
-    expect(noLoc.status).toBe(422);
+    expect(res.status).toBe(201);
+    // Lowest-id location of the role's type — an earlier store may already
+    // exist in this shared schema, so just assert it is a store.
+    const { rows } = await ctx.db.query<{ type: string }>(
+      'SELECT l.type FROM locations l JOIN users u ON u.location_id = l.id WHERE u.id = $1',
+      [res.body.user.id],
+    );
+    expect(rows[0]?.type).toBe('store');
+    expect(store).toBeGreaterThan(0);
+  });
+
+  it('rejects a scoped role whose bo\'gin type does not exist yet (422)', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    // No `supply` / `sex_storage` location is ever seeded in this file, so
+    // supply_manager has nothing to derive from.
+    const res = await request(ctx.app)
+      .post('/api/users')
+      .set('Authorization', `Bearer ${pm.token}`)
+      .send({
+        name: 'Z',
+        login: 'z1-supply',
+        password: 'a-strong-pass',
+        role: 'supply_manager',
+      });
+    expect(res.status).toBe(422);
   });
 });

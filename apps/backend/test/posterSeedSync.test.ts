@@ -321,7 +321,7 @@ describe('Poster seedSync — ingredients + prepacks (BOM)', () => {
               ingredient_id: '100',
               structure_unit: 'g',
               structure_type: '1',
-              structure_brutto: 1000, // 1000g per batch -> 0.5 kg per batch -> 0.5/2000 kg per unit
+              structure_brutto: 1000, // 1000 g -> 1 kg per batch -> 1/2 kg per kg of prepack
               ingredient_name: 'Flour',
               ingredient_unit: 'kg',
             },
@@ -330,7 +330,7 @@ describe('Poster seedSync — ingredients + prepacks (BOM)', () => {
               ingredient_id: '101',
               structure_unit: 'kg',
               structure_type: '1',
-              structure_brutto: 0.4, // 0.4 kg/batch -> 0.4/2000 kg per unit
+              structure_brutto: 0.4, // 0.4 kg/batch -> 0.4/2 kg per kg of prepack
               ingredient_name: 'Sugar',
               ingredient_unit: 'kg',
             },
@@ -357,10 +357,14 @@ describe('Poster seedSync — ingredients + prepacks (BOM)', () => {
       `SELECT qty_per_unit, component_product_id FROM recipes ORDER BY component_product_id`,
     );
     expect(recipes).toHaveLength(2);
-    // Flour: 1000 g (-> 1 kg) / 2000 out = 0.0005 kg per unit
-    expect(recipes[0]?.qty_per_unit).toBeCloseTo(0.0005, 6);
-    // Sugar: 0.4 kg / 2000 = 0.0002 kg per unit
-    expect(recipes[1]?.qty_per_unit).toBeCloseTo(0.0002, 6);
+    // `out` is Poster's batch yield in GRAMS, so out=2000 is a 2 kg batch and
+    // qty_per_unit is "component unit per 1 kg of finished prepack"
+    // (migration 0040 batch_yield). It used to be "per 1 out unit", which read
+    // a 2000 g batch as 2000 pieces and divided the recipe 1000x too far.
+    // Flour: 1000 g (-> 1 kg) / 2 kg batch = 0.5 kg per kg
+    expect(recipes[0]?.qty_per_unit).toBeCloseTo(0.5, 6);
+    // Sugar: 0.4 kg / 2 kg batch = 0.2 kg per kg
+    expect(recipes[1]?.qty_per_unit).toBeCloseTo(0.2, 6);
   });
 
   it('isolates per-prepack failures so one bad row does NOT poison the rest (Prove-It regression)', async () => {
@@ -404,7 +408,7 @@ describe('Poster seedSync — ingredients + prepacks (BOM)', () => {
           product_id: '500',
           ingredient_id: '600',
           product_name: 'Good prepack A',
-          out: 1,
+          out: 1000, // 1 kg batch (Poster reports `out` in grams)
           ingredients: [
             {
               structure_id: 's1',
@@ -424,7 +428,7 @@ describe('Poster seedSync — ingredients + prepacks (BOM)', () => {
           product_id: '502',
           ingredient_id: '602',
           product_name: 'Overflow prepack',
-          out: 1,
+          out: 1000,
           ingredients: [
             {
               structure_id: 's2',
@@ -443,7 +447,7 @@ describe('Poster seedSync — ingredients + prepacks (BOM)', () => {
           product_id: '503',
           ingredient_id: '603',
           product_name: 'Good prepack B',
-          out: 2,
+          out: 2000, // 2 kg batch
           ingredients: [
             {
               structure_id: 's3',
@@ -491,9 +495,9 @@ describe('Poster seedSync — ingredients + prepacks (BOM)', () => {
         ORDER BY p.poster_product_id`,
     );
     expect(recipes.length).toBe(2);
-    // Prepack #1 — 0.5 kg per 1 out = 0.5
+    // Prepack #1 — 0.5 kg into a 1 kg batch = 0.5 per kg
     expect(Number(recipes[0]?.qty_per_unit)).toBeCloseTo(0.5, 4);
-    // Prepack #3 — 1 kg per 2 out = 0.5
+    // Prepack #3 — 1 kg into a 2 kg batch = 0.5 per kg
     expect(Number(recipes[1]?.qty_per_unit)).toBeCloseTo(0.5, 4);
 
     // Prepack #2 has NO recipe (the row failed inside its SAVEPOINT and
@@ -516,7 +520,7 @@ describe('Poster seedSync — ingredients + prepacks (BOM)', () => {
           product_id: '500',
           ingredient_id: '600',
           product_name: 'Dough',
-          out: 1,
+          out: 1000, // 1 kg batch
           ingredients: [
             { structure_id: 's1', ingredient_id: '100', structure_unit: 'kg', structure_type: '1', structure_brutto: 0.5, ingredient_name: 'Flour', ingredient_unit: 'kg' },
             { structure_id: 's2', ingredient_id: '999', structure_unit: 'kg', structure_type: '1', structure_brutto: 0.2, ingredient_name: 'Missing', ingredient_unit: 'kg' },

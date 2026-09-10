@@ -52,7 +52,7 @@ describe('POST /api/nakladnoy', () => {
     expect(hamir.qty).toBe(2);
   });
 
-  it('blocks PM from generating (write = read-and-recommend)', async () => {
+  it('PM may generate a nakladnoy for any location (owner decision 2026-06-25)', async () => {
     const loc = await makeLocation(ctx.db, { type: 'production' });
     const pm = await makeUser(ctx.db, { role: 'pm', locationId: null });
     const cake = await makeProduct(ctx.db, { type: 'finished' });
@@ -61,7 +61,7 @@ describe('POST /api/nakladnoy', () => {
       .post('/api/nakladnoy')
       .set('Authorization', `Bearer ${pm.token}`)
       .send({ product_id: cake, qty: 1, location_id: loc });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(201);
   });
 });
 

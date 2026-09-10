@@ -172,7 +172,7 @@ describe('POST /api/replenishment/:id/accept', () => {
     expect(res.status).toBe(422);
   });
 
-  it('PM cannot accept (403)', async () => {
+  it('PM may accept (owner decision 2026-06-25)', async () => {
     const { reqId } = await makeClosedRequest({
       initialQtyStore: 0,
       qtyNeeded: 5,
@@ -183,7 +183,7 @@ describe('POST /api/replenishment/:id/accept', () => {
       .post(`/api/replenishment/${reqId}/accept`)
       .set('Authorization', `Bearer ${pm.token}`)
       .send({ qty_accepted: 5 });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
   });
 
   it('a foreign store_manager cannot accept (403)', async () => {
@@ -270,7 +270,7 @@ describe('POST /api/replenishment/:id/reject', () => {
     expect(res.status).toBe(422);
   });
 
-  it('PM cannot reject (403)', async () => {
+  it('PM may reject (owner decision 2026-06-25)', async () => {
     const { reqId } = await makeClosedRequest({
       initialQtyStore: 0,
       qtyNeeded: 5,
@@ -281,7 +281,7 @@ describe('POST /api/replenishment/:id/reject', () => {
       .post(`/api/replenishment/${reqId}/reject`)
       .set('Authorization', `Bearer ${pm.token}`)
       .send({ reason: 'try' });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
   });
 });
 

@@ -30,6 +30,7 @@ import {
   parseIdParam,
   requireEnum,
   requireNonNegativeNumber,
+  optionalNonNegativeNumber,
   requirePositiveNumber,
   requireString,
 } from '../lib/validate.js';
@@ -679,7 +680,11 @@ productsRouter.put(
         throw AppError.validation('Each recipe line needs a "component_product_id".');
       }
       const qtyPerUnit = requirePositiveNumber(line, 'qty_per_unit');
-      const brutto = requireNonNegativeNumber(line, 'brutto');
+      // `brutto` is optional. Migration 0039 gave the column DEFAULT 0 and
+      // documents 0 as "not set", and the create-product dialog sends recipe
+      // lines without it — demanding it here 422'd every new product that was
+      // saved together with its recipe.
+      const brutto = optionalNonNegativeNumber(line, 'brutto') ?? 0;
       // Default to the sync's value so a hand-saved line matches a synced one.
       const stageRaw = optionalString(line, 'stage') ?? 'base';
       const stage = (VALID_STAGES as readonly string[]).includes(stageRaw) ? stageRaw : 'base';

@@ -195,7 +195,7 @@ describe('POST /api/replenishment — validation + RBAC', () => {
     expect(res.status).toBe(422);
   });
 
-  it('PM is read-only — POST is 403 (no super-admin bypass)', async () => {
+  it('PM may create a request (owner decision 2026-06-25)', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const { store } = await chain();
     const product = await makeProduct(ctx.db, { type: 'finished' });
@@ -203,8 +203,7 @@ describe('POST /api/replenishment — validation + RBAC', () => {
       .post('/api/replenishment')
       .set('Authorization', `Bearer ${pm.token}`)
       .send({ product_id: product, requester_location_id: store, qty_needed: 5 });
-    expect(res.status).toBe(403);
-    expect(res.body.error?.code).toBe('FORBIDDEN');
+    expect(res.status).toBe(201);
   });
 
   it('a store_manager cannot create a request (403 — pm + central_warehouse_manager only)', async () => {
@@ -293,7 +292,7 @@ describe('POST /api/replenishment/:id/cancel', () => {
     expect(res.body.request?.status).toBe('CANCELLED');
   });
 
-  it('PM is read-only — cancel is 403 (no super-admin bypass)', async () => {
+  it('PM may cancel a request (owner decision 2026-06-25)', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const { store } = await chain();
     const product = await makeProduct(ctx.db, { type: 'finished' });
@@ -304,8 +303,7 @@ describe('POST /api/replenishment/:id/cancel', () => {
     const res = await request(ctx.app)
       .post(`/api/replenishment/${created.id}/cancel`)
       .set('Authorization', `Bearer ${pm.token}`);
-    expect(res.status).toBe(403);
-    expect(res.body.error?.code).toBe('FORBIDDEN');
+    expect(res.status).toBe(200);
   });
 
   it('an operator from another location cannot cancel (403 FOREIGN_LOCATION)', async () => {
@@ -389,7 +387,7 @@ describe('POST /api/replenishment/:id/advance — operator path', () => {
     expect(res.body.request).toBeDefined();
   });
 
-  it('PM is read-only — advance is 403 (no super-admin bypass)', async () => {
+  it('PM may advance a request (owner decision 2026-06-25)', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const { central, store } = await chain();
     const product = await makeProduct(ctx.db, { type: 'finished' });
@@ -400,8 +398,7 @@ describe('POST /api/replenishment/:id/advance — operator path', () => {
     const res = await request(ctx.app)
       .post(`/api/replenishment/${created.id}/advance`)
       .set('Authorization', `Bearer ${pm.token}`);
-    expect(res.status).toBe(403);
-    expect(res.body.error?.code).toBe('FORBIDDEN');
+    expect(res.status).toBe(200);
   });
 });
 

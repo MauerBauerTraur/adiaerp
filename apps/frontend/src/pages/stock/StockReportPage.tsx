@@ -28,6 +28,9 @@ type ReportRow = {
   in_qty: string;
   used_qty: string;
   sold_qty: string;
+  adjust_in_qty: string;
+  adjust_out_qty: string;
+  transfer_out_qty: string;
   closing_qty: string;
   in_production_qty: string;
 };
@@ -225,6 +228,12 @@ export function StockReportPage({ lockedView }: { lockedView?: ViewMode } = {}) 
     }
     return result;
   }, [rows, activeTypes, search]);
+
+  // Stock issued out of the selected location on an internal transfer
+  // ("Xomashyo berish", sex dispatch). Only a single-location report has such
+  // an outflow — across all locations an internal move nets to zero — so the
+  // column would be a wall of dashes in the unfiltered view.
+  const showTransferOut = locationId !== 'all';
 
   // ── Xarid ro'yxati ────────────────────────────────────────────────
   const reorderPath = useMemo(() => {
@@ -496,7 +505,11 @@ export function StockReportPage({ lockedView }: { lockedView?: ViewMode } = {}) 
                     <TableHead className="text-right">Ishlab chiqarildi / Xarid</TableHead>
                     <TableHead className="text-right">Ishlab chiqarishda</TableHead>
                     <TableHead className="text-right">Ishlatildi</TableHead>
+                    {showTransferOut && (
+                      <TableHead className="text-right">Berildi</TableHead>
+                    )}
                     <TableHead className="text-right">Sotildi</TableHead>
+                    <TableHead className="text-right">Korrektirovka</TableHead>
                     <TableHead className="text-right">Qoldiq</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -521,7 +534,10 @@ export function StockReportPage({ lockedView }: { lockedView?: ViewMode } = {}) 
                         <TableCell className="text-right tabular-nums text-emerald-600 dark:text-emerald-400">
                           {fmtQty(row.in_qty)}
                         </TableCell>
-                        <TableCell className="text-right tabular-nums text-sky-600 dark:text-sky-400">
+                        <TableCell
+                          className="text-right tabular-nums text-sky-600 dark:text-sky-400"
+                          title="Ochiq zayavkada: ishlab chiqarilayotgan miqdor, xomashyo uchun — berishga band qilingan miqdor"
+                        >
                           {Number(row.in_production_qty) > 0
                             ? fmtQty(row.in_production_qty)
                             : '—'}
@@ -529,8 +545,40 @@ export function StockReportPage({ lockedView }: { lockedView?: ViewMode } = {}) 
                         <TableCell className="text-right tabular-nums text-amber-600 dark:text-amber-400">
                           {fmtQty(row.used_qty)}
                         </TableCell>
+                        {showTransferOut && (
+                          <TableCell
+                            className="text-right tabular-nums text-orange-600 dark:text-orange-400"
+                            title="Boshqa bo'g'inga berildi (xomashyo berish / ko'chirish)"
+                          >
+                            {Number(row.transfer_out_qty) > 0
+                              ? fmtQty(row.transfer_out_qty)
+                              : '—'}
+                          </TableCell>
+                        )}
                         <TableCell className="text-right tabular-nums text-rose-600 dark:text-rose-400">
                           {fmtQty(row.sold_qty)}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {(() => {
+                            const net =
+                              Number(row.adjust_in_qty) - Number(row.adjust_out_qty);
+                            if (Math.abs(net) < 1e-9) {
+                              return <span className="text-muted-foreground">—</span>;
+                            }
+                            return (
+                              <span
+                                className={
+                                  net > 0
+                                    ? 'text-emerald-600 dark:text-emerald-400'
+                                    : 'text-rose-600 dark:text-rose-400'
+                                }
+                                title="Poster korrektirovka (leftover sinxronidan)"
+                              >
+                                {net > 0 ? '+' : '−'}
+                                {fmtQty(String(Math.abs(net)))}
+                              </span>
+                            );
+                          })()}
                         </TableCell>
                         <TableCell className="text-right tabular-nums font-semibold">
                           {fmtQty(row.closing_qty)}

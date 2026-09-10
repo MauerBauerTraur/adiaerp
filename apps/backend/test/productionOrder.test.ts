@@ -3,8 +3,11 @@
  *
  * Covers spec acceptance criteria:
  *   AC5.1 — `done` consumes BOM raw atomically AND produces output atomically.
- *   AC5.2 — when a BOM component is short, `done` is rejected (409) and
- *           NOTHING in stock changes (full rollback).
+ *   AC5.2 — when a BOM component is short, `done` still completes and the
+ *           component goes negative (migration 0043 dropped the qty >= 0
+ *           CHECK; `consumeBomAndProduce` consumes with `allowNegative`).
+ *           The original rule refused with 409 INSUFFICIENT_STOCK and rolled
+ *           everything back, which stranded goods the sex had already made.
  *   AC5.3 — when the order was raised by a replenishment, completing it
  *           steps the linked request to DONE_TO_WAREHOUSE.
  */
@@ -85,33 +88,29 @@ describe('production_order.done — AC5.1', () => {
   });
 });
 
-describe('production_order.done — AC5.2 (insufficient stock rolls back EVERYTHING)', () => {
-  it('rejects with INSUFFICIENT_STOCK and changes NOTHING when a component is short', async () => {
+describe('production_order.done — AC5.2 (a short component becomes a debt, not a refusal)', () => {
+  it('completes the order and drives the short component negative', async () => {
     // 5 finished needs 10 flour + 5 sugar — we have only 8 flour.
     await setStock(ctx.db, { locationId: productionLoc, productId: rawFlour, qty: 8 });
     await setStock(ctx.db, { locationId: productionLoc, productId: rawSugar, qty: 10 });
 
     const orderId = await createOrder(5);
-    await expect(finishProductionOrder(orderId, null)).rejects.toMatchObject({
-      code: 'INSUFFICIENT_STOCK',
+    await expect(finishProductionOrder(orderId, null)).resolves.toMatchObject({
+      status: 'done',
     });
 
-    // AC5.2 — neither raw was consumed, no output was created, status stays new.
-    expect(await getQty(ctx.db, productionLoc, rawFlour)).toBe(8);
-    expect(await getQty(ctx.db, productionLoc, rawSugar)).toBe(10);
-    expect(await getQty(ctx.db, centralWh, finishedProduct)).toBe(null);
+    // Flour: 8 - 10 = -2, the deficit the warehouse now owes the department.
+    // Sugar consumes normally and the 5 finished units reach the warehouse.
+    expect(await getQty(ctx.db, productionLoc, rawFlour)).toBe(-2);
+    expect(await getQty(ctx.db, productionLoc, rawSugar)).toBe(5);
+    expect(await getQty(ctx.db, centralWh, finishedProduct)).toBe(5);
 
+    // Every movement is still its own ledger row: 2 inputs + 1 output.
     const ledger = await ctx.db.query<{ n: string }>(
       `SELECT count(*) AS n FROM stock_movements WHERE production_order_id = $1`,
       [orderId],
     );
-    expect(Number(ledger.rows[0]?.n)).toBe(0);
-
-    const status = await ctx.db.query<{ status: string }>(
-      `SELECT status FROM production_orders WHERE id = $1`,
-      [orderId],
-    );
-    expect(status.rows[0]?.status).toBe('new');
+    expect(Number(ledger.rows[0]?.n)).toBe(3);
   });
 });
 

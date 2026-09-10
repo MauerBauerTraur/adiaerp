@@ -347,7 +347,10 @@ stockRouter.post(
     const reason = deriveManualReason(body, fromLocationId, toLocationId);
 
     // The operator must own at least one endpoint (M:N — ADR-0012).
+    // super_admin / pm are chain-wide and own no location, so the check would
+    // reject them outright — they are exempt (owner decision 2026-06-25).
     const touchesOwn =
+      isSuperAdmin(principal) ||
       (fromLocationId !== null && principal.locationIds.includes(fromLocationId)) ||
       (toLocationId !== null && principal.locationIds.includes(toLocationId));
     if (!touchesOwn) {
@@ -571,6 +574,9 @@ stockRouter.get(
       in_qty: string;
       used_qty: string;
       sold_qty: string;
+      adjust_in_qty: string;
+      adjust_out_qty: string;
+      transfer_out_qty: string;
       closing_qty: string;
       in_production_qty: string;
     };
@@ -602,7 +608,34 @@ stockRouter.get(
                     AND reason = 'sale' THEN qty
                ELSE 0
              END
-           ) AS movement_sold_qty
+           ) AS movement_sold_qty,
+           -- Korrektirovka (Poster leftover reconciliation) that ADDS stock.
+           SUM(
+             CASE
+               WHEN $1::bigint IS NULL AND reason = 'adjust' AND to_location_id IS NOT NULL THEN qty
+               WHEN $1::bigint IS NOT NULL AND reason = 'adjust' AND to_location_id = $1::bigint THEN qty
+               ELSE 0
+             END
+           ) AS adj_in_qty,
+           -- Korrektirovka that REMOVES stock (a Poster sale/write-off arrives here).
+           SUM(
+             CASE
+               WHEN $1::bigint IS NULL AND reason = 'adjust' AND from_location_id IS NOT NULL THEN qty
+               WHEN $1::bigint IS NOT NULL AND reason = 'adjust' AND from_location_id = $1::bigint THEN qty
+               ELSE 0
+             END
+           ) AS adj_out_qty,
+           -- Stock that LEFT the selected location on an internal transfer
+           -- ("Xomashyo berish", dispatch, replenishment). Without a location
+           -- filter an internal move is neither in nor out for the company as
+           -- a whole, so the term stays 0 and the totals are unchanged.
+           SUM(
+             CASE
+               WHEN $1::bigint IS NOT NULL AND reason = 'transfer'
+                    AND from_location_id = $1::bigint THEN qty
+               ELSE 0
+             END
+           ) AS transfer_out_qty
          FROM stock_movements
          WHERE created_at >= $2
            AND ($3::timestamptz IS NULL OR created_at < $3::timestamptz)
@@ -639,7 +672,32 @@ stockRouter.get(
                     AND reason = 'sale' THEN qty
                ELSE 0
              END
-           ) AS movement_sold_qty
+           ) AS movement_sold_qty,
+           SUM(
+             CASE
+               WHEN $1::bigint IS NULL AND reason = 'adjust' AND to_location_id IS NOT NULL THEN qty
+               WHEN $1::bigint IS NOT NULL AND reason = 'adjust' AND to_location_id = $1::bigint THEN qty
+               ELSE 0
+             END
+           ) AS adj_in_qty,
+           SUM(
+             CASE
+               WHEN $1::bigint IS NULL AND reason = 'adjust' AND from_location_id IS NOT NULL THEN qty
+               WHEN $1::bigint IS NOT NULL AND reason = 'adjust' AND from_location_id = $1::bigint THEN qty
+               ELSE 0
+             END
+           ) AS adj_out_qty,
+           -- Stock that LEFT the selected location on an internal transfer
+           -- ("Xomashyo berish", dispatch, replenishment). Without a location
+           -- filter an internal move is neither in nor out for the company as
+           -- a whole, so the term stays 0 and the totals are unchanged.
+           SUM(
+             CASE
+               WHEN $1::bigint IS NOT NULL AND reason = 'transfer'
+                    AND from_location_id = $1::bigint THEN qty
+               ELSE 0
+             END
+           ) AS transfer_out_qty
          FROM stock_movements
          WHERE $3::timestamptz IS NOT NULL
            AND created_at >= $3::timestamptz
@@ -654,20 +712,54 @@ stockRouter.get(
          WHERE ($1::bigint IS NULL OR location_id = $1::bigint)
          GROUP BY product_id
        ),
+       -- "Ishlab chiqarishda" — what an open production order is holding.
+       --
+       -- Two disjoint halves, because a product is on exactly one side of a
+       -- zayavka: the thing being MADE, or a raw material waiting to be issued
+       -- to the sex that makes it.
+       --
+       --   prod     — the produced item. Counted once for BOTH the sex that
+       --              makes it and the warehouse it is destined for, so the
+       --              figure reads correctly at either end of the flow.
+       --   reserved — a raw material committed to an open order and still
+       --              sitting in this warehouse (Xomashyo berish not yet
+       --              done). Without it a raw-material row showed nothing at
+       --              all until the material physically left, which is the
+       --              whole window in which a warehouse keeper needs to see
+       --              it. collectRaw only ever raises these for raw products,
+       --              and the order's own output dispatch is excluded, so the
+       --              two halves never count the same quantity twice.
        prod AS (
          SELECT product_id, SUM(qty) AS in_production_qty
          FROM production_orders
-         WHERE status = 'new'
-           AND $1::bigint IS NULL
+         WHERE status IN ('new', 'in_progress')
+           AND ($1::bigint IS NULL
+                OR location_id = $1::bigint
+                OR target_location_id = $1::bigint)
          GROUP BY product_id
        ),
+       reserved AS (
+         SELECT d.product_id, SUM(d.qty_needed) AS reserved_qty
+         FROM production_dispatches d
+         JOIN production_orders po ON po.id = d.production_order_id
+         WHERE d.status = 'pending'
+           AND po.status IN ('new', 'in_progress')
+           AND d.product_id <> po.product_id
+           AND ($1::bigint IS NULL OR d.from_location_id = $1::bigint)
+         GROUP BY d.product_id
+       ),
        -- Balance at the end of the window. With no upper bound it is today's stock.
+       -- Roll back every after-window movement, korrektirovka included, so the
+       -- closing figure lines up with in/used/sold/adjust below.
        bal AS (
          SELECT p.id AS product_id,
                 COALESCE(stk.closing_qty, 0)
                   - COALESCE(am.in_qty, 0)
+                  - COALESCE(am.adj_in_qty, 0)
                   + COALESCE(am.used_qty, 0)
-                  + COALESCE(am.movement_sold_qty, 0) AS closing_qty
+                  + COALESCE(am.movement_sold_qty, 0)
+                  + COALESCE(am.adj_out_qty, 0)
+                  + COALESCE(am.transfer_out_qty, 0) AS closing_qty
          FROM products p
          LEFT JOIN stk        ON stk.product_id = p.id
          LEFT JOIN after_mvmt am ON am.product_id = p.id
@@ -681,24 +773,41 @@ stockRouter.get(
          ROUND(COALESCE(mvmt.in_qty, 0), 4)      AS in_qty,
          ROUND(COALESCE(mvmt.used_qty, 0), 4)    AS used_qty,
          ROUND(COALESCE(mvmt.movement_sold_qty, 0), 4) AS sold_qty,
-         ROUND(GREATEST(0,
+         ROUND(COALESCE(mvmt.adj_in_qty, 0), 4)  AS adjust_in_qty,
+         ROUND(COALESCE(mvmt.adj_out_qty, 0), 4) AS adjust_out_qty,
+         ROUND(COALESCE(mvmt.transfer_out_qty, 0), 4) AS transfer_out_qty,
+         -- Opening is derived backwards from the closing balance, so every
+         -- outflow term has to be here or the row stops adding up. It is NOT
+         -- clamped at 0: stock may legitimately be negative (migration 0043),
+         -- and clamping made a negative opening print as 0 against a real
+         -- negative closing figure.
+         ROUND(
            COALESCE(bal.closing_qty, 0)
            - COALESCE(mvmt.in_qty, 0)
+           - COALESCE(mvmt.adj_in_qty, 0)
            + COALESCE(mvmt.used_qty, 0)
            + COALESCE(mvmt.movement_sold_qty, 0)
-         ), 4) AS opening_qty,
-         ROUND(COALESCE(prod.in_production_qty, 0), 4) AS in_production_qty
+           + COALESCE(mvmt.adj_out_qty, 0)
+           + COALESCE(mvmt.transfer_out_qty, 0)
+         , 4) AS opening_qty,
+         ROUND(COALESCE(prod.in_production_qty, 0)
+             + COALESCE(reserved.reserved_qty, 0), 4) AS in_production_qty
        FROM products p
-       LEFT JOIN mvmt    ON mvmt.product_id    = p.id
-       LEFT JOIN bal     ON bal.product_id     = p.id
-       LEFT JOIN prod    ON prod.product_id    = p.id
+       LEFT JOIN mvmt     ON mvmt.product_id     = p.id
+       LEFT JOIN bal      ON bal.product_id      = p.id
+       LEFT JOIN prod     ON prod.product_id     = p.id
+       LEFT JOIN reserved ON reserved.product_id = p.id
        WHERE p.is_active = TRUE
          AND (
            COALESCE(bal.closing_qty, 0) <> 0
            OR COALESCE(mvmt.in_qty, 0)   > 0
            OR COALESCE(mvmt.used_qty, 0) > 0
            OR COALESCE(mvmt.movement_sold_qty, 0) > 0
+           OR COALESCE(mvmt.adj_in_qty, 0) > 0
+           OR COALESCE(mvmt.adj_out_qty, 0) > 0
+           OR COALESCE(mvmt.transfer_out_qty, 0) > 0
            OR COALESCE(prod.in_production_qty, 0) > 0
+           OR COALESCE(reserved.reserved_qty, 0) > 0
          )
        ORDER BY p.name`,
       [locationId, fromDate.toISOString(), toBound?.toISOString() ?? null],

@@ -141,7 +141,7 @@ describe('POST /api/production-orders — validation + RBAC', () => {
     expect(res.status).toBe(403);
   });
 
-  it('PM is read-only — POST is 403 (no super-admin bypass)', async () => {
+  it('PM may create a production order (owner decision 2026-06-25)', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const prod = await makeLocation(ctx.db, { type: 'production' });
     const central = await makeLocation(ctx.db, { type: 'central_warehouse' });
@@ -153,8 +153,7 @@ describe('POST /api/production-orders — validation + RBAC', () => {
         product_id: finished, qty: 1, location_id: prod,
         target_location_id: central,
       });
-    expect(res.status).toBe(403);
-    expect(res.body.error?.code).toBe('FORBIDDEN');
+    expect(res.status).toBe(201);
   });
 
   it('production_manager creates an order with all optional fields', async () => {
@@ -207,7 +206,12 @@ describe('PATCH /api/production-orders/:id — transitions', () => {
     expect(Number(audit.rows[0]?.n)).toBe(1);
   });
 
-  it('PATCH done with INSUFFICIENT_STOCK rolls back EVERYTHING (status stays new)', async () => {
+  // Migration 0043 dropped the qty >= 0 CHECK and `consumeBomAndProduce`
+  // consumes with `allowNegative: true`: a short component is booked as a
+  // debt against the department instead of blocking the order. The rule this
+  // replaced returned 409 INSUFFICIENT_STOCK and rolled the whole flow back,
+  // which stranded finished goods the sex had already made.
+  it('PATCH done consumes a short component into a negative balance instead of refusing', async () => {
     const prod = await makeLocation(ctx.db, { type: 'production' });
     const prodMgr = await makeUser(ctx.db, { role: 'production_manager', locationId: prod });
     const central = await makeLocation(ctx.db, { type: 'central_warehouse' });
@@ -225,21 +229,27 @@ describe('PATCH /api/production-orders/:id — transitions', () => {
       .patch(`/api/production-orders/${id}`)
       .set('Authorization', `Bearer ${prodMgr.token}`)
       .send({ status: 'done' });
-    expect(res.status).toBe(409);
-    expect(res.body.error?.code).toBe('INSUFFICIENT_STOCK');
+    expect(res.status).toBe(200);
 
-    // Nothing in stock changed and the order is still 'new'.
+    // 2 on hand, 5 consumed -> -3 owed by the department; order is done.
     const { rows } = await ctx.db.query<{ qty: string; status: string }>(
       `SELECT s.qty, po.status
        FROM production_orders po, stock s
        WHERE po.id = $1 AND s.location_id = $2 AND s.product_id = $3`,
       [id, prod, raw],
     );
-    expect(Number(rows[0]?.qty)).toBe(2);
-    expect(rows[0]?.status).toBe('new');
+    expect(Number(rows[0]?.qty)).toBe(-3);
+    expect(rows[0]?.status).toBe('done');
+
+    // The finished unit still landed in the target warehouse.
+    const { rows: out } = await ctx.db.query<{ qty: string }>(
+      'SELECT qty FROM stock WHERE location_id = $1 AND product_id = $2',
+      [central, finished],
+    );
+    expect(Number(out[0]?.qty)).toBe(1);
   });
 
-  it('PM is read-only — PATCH is 403 (no super-admin bypass)', async () => {
+  it('PM may advance a production order (owner decision 2026-06-25)', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const prod = await makeLocation(ctx.db, { type: 'production' });
     const central = await makeLocation(ctx.db, { type: 'central_warehouse' });
@@ -250,8 +260,7 @@ describe('PATCH /api/production-orders/:id — transitions', () => {
       .patch(`/api/production-orders/${id}`)
       .set('Authorization', `Bearer ${pm.token}`)
       .send({ status: 'in_progress' });
-    expect(res.status).toBe(403);
-    expect(res.body.error?.code).toBe('FORBIDDEN');
+    expect(res.status).toBe(200);
   });
 
   it('returns 404 NOT_FOUND when the id does not exist (in_progress branch)', async () => {

@@ -1,21 +1,24 @@
 /**
- * RBAC matrix — owner-approved 2026-05-28 hardening.
+ * RBAC matrix.
  *
  * Top-level invariants:
  *
- *   1. PM × any business write endpoint = 403 FORBIDDEN.
- *      Configuration endpoints (users, locations, products, /api/admin/*,
- *      /api/stock/minmax) are exempt and exercised separately — PM keeps
- *      access there.
+ *   1. PM is NOT blocked on business writes. The 2026-05-28 hardening made PM
+ *      read-and-recommend (403 on every business write); the owner replaced
+ *      that on 2026-06-25 — PM adds, edits and deletes everything. What these
+ *      cases pin is that no RBAC guard turns a PM write into a 403; the
+ *      endpoint's own business rules (status transitions, validation) still
+ *      apply, so a case whose preconditions are not met asserts only that the
+ *      refusal is not FORBIDDEN.
  *
  *   2. A scoped operator may only act on data for its own location
  *      (M:N — ADR-0012). Foreign-location writes return 403 FORBIDDEN.
  *
  *   3. A scoped operator on its own location succeeds (control).
  *
- * These tests pin the new policy across the five write modules touched
- * by the hardening pass: replenishment, productionOrders, purchaseOrders,
- * stock, delivery.
+ * These tests pin the policy across the five write modules touched by the
+ * hardening pass: replenishment, productionOrders, purchaseOrders, stock,
+ * delivery.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
@@ -41,8 +44,8 @@ afterAll(async () => {
 // ---------------------------------------------------------------------------
 // PM × every business write endpoint = 403
 // ---------------------------------------------------------------------------
-describe('PM_WRITE_BLOCKED — PM hits 403 on every business write', () => {
-  it('POST /api/replenishment — 403', async () => {
+describe('PM_WRITE_ALLOWED — no RBAC guard turns a PM business write into 403', () => {
+  it('POST /api/replenishment — not 403', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const store = await makeLocation(ctx.db, { type: 'store' });
     const product = await makeProduct(ctx.db, { type: 'finished' });
@@ -50,10 +53,10 @@ describe('PM_WRITE_BLOCKED — PM hits 403 on every business write', () => {
       .post('/api/replenishment')
       .set('Authorization', `Bearer ${pm.token}`)
       .send({ product_id: product, requester_location_id: store, qty_needed: 1 });
-    expect(res.status).toBe(403);
+    expect(res.status).not.toBe(403);
   });
 
-  it('POST /api/replenishment/:id/advance — 403', async () => {
+  it('POST /api/replenishment/:id/advance — not 403', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const store = await makeLocation(ctx.db, { type: 'store' });
     const product = await makeProduct(ctx.db, { type: 'finished' });
@@ -63,10 +66,10 @@ describe('PM_WRITE_BLOCKED — PM hits 403 on every business write', () => {
     const res = await request(ctx.app)
       .post(`/api/replenishment/${created.id}/advance`)
       .set('Authorization', `Bearer ${pm.token}`);
-    expect(res.status).toBe(403);
+    expect(res.status).not.toBe(403);
   });
 
-  it('POST /api/replenishment/:id/cancel — 403', async () => {
+  it('POST /api/replenishment/:id/cancel — not 403', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const store = await makeLocation(ctx.db, { type: 'store' });
     const product = await makeProduct(ctx.db, { type: 'finished' });
@@ -76,10 +79,10 @@ describe('PM_WRITE_BLOCKED — PM hits 403 on every business write', () => {
     const res = await request(ctx.app)
       .post(`/api/replenishment/${created.id}/cancel`)
       .set('Authorization', `Bearer ${pm.token}`);
-    expect(res.status).toBe(403);
+    expect(res.status).not.toBe(403);
   });
 
-  it('POST /api/production-orders — 403', async () => {
+  it('POST /api/production-orders — not 403', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const prod = await makeLocation(ctx.db, { type: 'production' });
     const central = await makeLocation(ctx.db, { type: 'central_warehouse' });
@@ -91,10 +94,10 @@ describe('PM_WRITE_BLOCKED — PM hits 403 on every business write', () => {
         product_id: finished, qty: 1,
         location_id: prod, target_location_id: central,
       });
-    expect(res.status).toBe(403);
+    expect(res.status).not.toBe(403);
   });
 
-  it('PATCH /api/production-orders/:id — 403', async () => {
+  it('PATCH /api/production-orders/:id — not 403', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const prod = await makeLocation(ctx.db, { type: 'production' });
     const central = await makeLocation(ctx.db, { type: 'central_warehouse' });
@@ -109,10 +112,10 @@ describe('PM_WRITE_BLOCKED — PM hits 403 on every business write', () => {
       .patch(`/api/production-orders/${id}`)
       .set('Authorization', `Bearer ${pm.token}`)
       .send({ status: 'in_progress' });
-    expect(res.status).toBe(403);
+    expect(res.status).not.toBe(403);
   });
 
-  it('POST /api/purchase-orders — 403', async () => {
+  it('POST /api/purchase-orders — not 403', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const rawWh = await makeLocation(ctx.db, { type: 'raw_warehouse' });
     const product = await makeProduct(ctx.db, { type: 'raw' });
@@ -120,10 +123,15 @@ describe('PM_WRITE_BLOCKED — PM hits 403 on every business write', () => {
       .post('/api/purchase-orders')
       .set('Authorization', `Bearer ${pm.token}`)
       .send({ product_id: product, qty: 5, target_location_id: rawWh });
-    expect(res.status).toBe(403);
+    expect(res.status).not.toBe(403);
   });
 
-  it('POST /api/purchase-orders/:id/approve — 403', async () => {
+  // The one endpoint a PM still cannot drive. Not the superseded read-only
+  // rule: the two-step supply approval (D5 / domain invariant 7) is keyed to
+  // role identity — `manager` is the supply_manager who raised the draft,
+  // `keeper` the raw_warehouse_manager who receives it. Letting a PM stand in
+  // for either would collapse the two-person control into one signature.
+  it('POST /api/purchase-orders/:id/approve — still 403 (two-step approval)', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const rawWh = await makeLocation(ctx.db, { type: 'raw_warehouse' });
     const product = await makeProduct(ctx.db, { type: 'raw' });
@@ -140,7 +148,7 @@ describe('PM_WRITE_BLOCKED — PM hits 403 on every business write', () => {
     expect(res.status).toBe(403);
   });
 
-  it('POST /api/purchase-orders/:id/receive — 403', async () => {
+  it('POST /api/purchase-orders/:id/receive — not 403', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const rawWh = await makeLocation(ctx.db, { type: 'raw_warehouse' });
     const product = await makeProduct(ctx.db, { type: 'raw' });
@@ -153,10 +161,10 @@ describe('PM_WRITE_BLOCKED — PM hits 403 on every business write', () => {
     const res = await request(ctx.app)
       .post(`/api/purchase-orders/${id}/receive`)
       .set('Authorization', `Bearer ${pm.token}`);
-    expect(res.status).toBe(403);
+    expect(res.status).not.toBe(403);
   });
 
-  it('POST /api/purchase-orders/:id/reject — 403', async () => {
+  it('POST /api/purchase-orders/:id/reject — not 403', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const rawWh = await makeLocation(ctx.db, { type: 'raw_warehouse' });
     const product = await makeProduct(ctx.db, { type: 'raw' });
@@ -169,10 +177,10 @@ describe('PM_WRITE_BLOCKED — PM hits 403 on every business write', () => {
     const res = await request(ctx.app)
       .post(`/api/purchase-orders/${id}/reject`)
       .set('Authorization', `Bearer ${pm.token}`);
-    expect(res.status).toBe(403);
+    expect(res.status).not.toBe(403);
   });
 
-  it('POST /api/stock/movement — 403', async () => {
+  it('POST /api/stock/movement — not 403', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const loc = await makeLocation(ctx.db, { type: 'central_warehouse' });
     const product = await makeProduct(ctx.db);
@@ -180,7 +188,7 @@ describe('PM_WRITE_BLOCKED — PM hits 403 on every business write', () => {
       .post('/api/stock/movement')
       .set('Authorization', `Bearer ${pm.token}`)
       .send({ product_id: product, to_location_id: loc, qty: 1 });
-    expect(res.status).toBe(403);
+    expect(res.status).not.toBe(403);
   });
 
 });

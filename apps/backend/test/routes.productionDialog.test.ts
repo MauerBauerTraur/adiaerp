@@ -110,14 +110,14 @@ describe('POST /api/production/dialog/:id/answer', () => {
     expect(res.status).toBe(403);
   });
 
-  it('pm is blocked from answering (read-and-recommend)', async () => {
+  it('pm may answer a dialog for any sex (owner decision 2026-06-25)', async () => {
     const { dialogId } = await sexWithDialog();
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const res = await request(ctx.app)
       .post(`/api/production/dialog/${dialogId}/answer`)
       .set('Authorization', `Bearer ${pm.token}`)
       .send({ option_id: 'ready' });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
   });
 
   it('an invalid option is 422 INVALID_OPTION', async () => {

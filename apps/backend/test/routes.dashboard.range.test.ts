@@ -223,19 +223,19 @@ describe('GET /api/dashboard/ecosystem — ?range', () => {
       .get('/api/dashboard/ecosystem?range=month')
       .set('Authorization', `Bearer ${w.pm.token}`);
     expect(res.status).toBe(200);
-    // The 25-day-old stat_date row is now inside the window.
-    expect(res.body.sales_chart.days.length).toBeGreaterThanOrEqual(3);
-    // The sum is global across the schema (other tests in this file also seed
-    // sales_stats_daily). We only assert this seed's quantities are present.
-    const qtySet = new Set(
-      res.body.sales_chart.days.map((d: { qty: number }) => Number(d.qty)),
+    // The 25-day-old row is now inside the window. The chart reads `sales`
+    // (not `sales_stats_daily`), and every `it` in this file re-seeds the same
+    // three days, so quantities roll up unpredictably across runs — assert the
+    // WINDOW instead: the oldest day on the chart is the 25-day-old sale.
+    const dates: string[] = res.body.sales_chart.days
+      .map((d: { date: string }) => d.date)
+      .sort();
+    expect(dates.length).toBeGreaterThanOrEqual(3);
+    const oldestAgeDays = Math.round(
+      (Date.now() - new Date(`${dates[0]}T00:00:00Z`).getTime()) / 86_400_000,
     );
-    // qty_sold for this seed: 10 (today), 20 (-7d), 30 (-25d). Other seeds
-    // pump the SAME location_id+product_id+stat_date keys though, so the
-    // aggregate may roll up. Just assert one row exceeds the smallest single
-    // seeded value.
-    const maxQty = Math.max(...(qtySet as Set<number>));
-    expect(maxQty).toBeGreaterThanOrEqual(30);
+    expect(oldestAgeDays).toBeGreaterThanOrEqual(24);
+    expect(oldestAgeDays).toBeLessThanOrEqual(31);
   });
 });
 

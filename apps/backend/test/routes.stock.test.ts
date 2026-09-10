@@ -35,8 +35,8 @@ afterAll(async () => {
 // ---------------------------------------------------------------------------
 describe('POST /api/stock/movement — validation edge cases', () => {
   it('rejects a movement with neither from nor to (422)', async () => {
-    // PM is read-only on movements (owner-approved 2026-05-28) — use an
-    // operator whose locationIds cover the endpoint locations involved.
+    // Exercise the scoped-operator path — an operator whose locationIds
+    // cover the endpoint locations involved (PM would skip the check).
     const loc = await makeLocation(ctx.db, { type: 'central_warehouse' });
     const cwm = await makeUser(ctx.db, {
       role: 'central_warehouse_manager', locationId: loc,
@@ -76,7 +76,7 @@ describe('POST /api/stock/movement — validation edge cases', () => {
     expect(res.status).toBe(422);
   });
 
-  it('PM is read-only — movement is 403 (no super-admin bypass)', async () => {
+  it('PM may move stock into any location, owning none (owner decision 2026-06-25)', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const loc = await makeLocation(ctx.db, { type: 'central_warehouse' });
     const product = await makeProduct(ctx.db);
@@ -84,8 +84,7 @@ describe('POST /api/stock/movement — validation edge cases', () => {
       .post('/api/stock/movement')
       .set('Authorization', `Bearer ${pm.token}`)
       .send({ product_id: product, to_location_id: loc, qty: 5 });
-    expect(res.status).toBe(403);
-    expect(res.body.error?.code).toBe('FORBIDDEN');
+    expect(res.status).toBe(201);
   });
 });
 

@@ -1,14 +1,18 @@
 /**
- * Hardened RBAC for write actions (owner-approved 2026-05-28).
+ * RBAC for write actions.
  *
- * Covers two new units:
+ * Covers two units:
  *
- *   1. `authorizeWrite(...allowed)` — PM is ALWAYS 403; an `allowed` role
- *      passes; any other role is 403.
- *   2. `requireLocationOperator(principal, locId)` — PM is ALWAYS thrown
- *      (PM_WRITE_BLOCKED); an operator with the location in its
+ *   1. `authorizeWrite(...allowed)` — a super-admin role (`super_admin`,
+ *      `pm`) passes; an `allowed` role passes; any other role is 403.
+ *   2. `requireLocationOperator(principal, locId)` — a super-admin passes
+ *      whatever the location; an operator with the location in its
  *      `locationIds` passes; an operator outside its assignment is thrown
  *      (FOREIGN_LOCATION).
+ *
+ * Both used to block PM outright (owner-approved 2026-05-28: PM was
+ * read-and-recommend). The owner replaced that rule on 2026-06-25 — PM adds,
+ * edits and deletes everything — so a super-admin now passes both gates.
  *
  * The 403 responses must carry `error.code === 'FORBIDDEN'` (per spec
  * §4.10 — the public code stays FORBIDDEN; the audit log records the
@@ -57,13 +61,12 @@ function callMw(mw: ReturnType<typeof authorizeWrite>, req: Request): Promise<un
 // authorizeWrite
 // ---------------------------------------------------------------------------
 describe('authorizeWrite — middleware factory', () => {
-  it('PM is ALWAYS 403 (no super-admin bypass on write paths)', async () => {
+  it('a super-admin role passes even when not in the allowed set', async () => {
     const mw = authorizeWrite('store_manager', 'central_warehouse_manager');
-    const err = await callMw(mw, fakeReq(principal({ role: 'pm', locationIds: [] })));
-    expect(err).toBeInstanceOf(AppError);
-    expect((err as AppError).status).toBe(403);
-    expect((err as AppError).code).toBe('FORBIDDEN');
-    expect((err as AppError).message).toMatch(/PM has read-only access/);
+    for (const role of ['pm', 'super_admin'] as const) {
+      const err = await callMw(mw, fakeReq(principal({ role, locationIds: [] })));
+      expect(err).toBeUndefined();
+    }
   });
 
   it('an allowed role passes', async () => {
@@ -92,10 +95,12 @@ describe('authorizeWrite — middleware factory', () => {
 // requireLocationOperator
 // ---------------------------------------------------------------------------
 describe('requireLocationOperator — handler guard', () => {
-  it('PM is ALWAYS forbidden (PM_WRITE_BLOCKED)', async () => {
-    await expect(
-      requireLocationOperator(principal({ role: 'pm', locationIds: [] }), 42),
-    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  it('a super-admin passes for any location, owning none', async () => {
+    for (const role of ['pm', 'super_admin'] as const) {
+      await expect(
+        requireLocationOperator(principal({ role, locationIds: [] }), 42),
+      ).resolves.toBeUndefined();
+    }
   });
 
   it('operator with the target in its assignment passes', async () => {

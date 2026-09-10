@@ -1659,10 +1659,11 @@ function severityFor(type: string): AlertSeverity {
 }
 
 /**
- * Last 30 days of sales, aggregated from `sales_stats_daily`. For a scoped
- * principal, only their assigned locations contribute. The chart is fed by
- * the nightly `salesAggregateCron`, so per-day rows always exist for days
- * that had sales.
+ * Sales over the requested range, aggregated straight from `sales`. For a
+ * scoped principal, only their assigned locations contribute. It deliberately
+ * does NOT read `sales_stats_daily`: that table is only as fresh as the last
+ * `salesAggregateCron` run, so the chart went flat for today until the nightly
+ * job fired.
  */
 async function fetchSalesChart(
   scope: Exclude<EcosystemScope, { kind: 'empty' }>,

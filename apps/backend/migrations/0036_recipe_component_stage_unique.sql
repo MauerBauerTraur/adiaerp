@@ -13,12 +13,22 @@
 -- allowing one component across different stages. Idempotent + non-destructive
 -- (no row is deleted; only the constraint definition changes).
 
+-- Both existence checks are scoped to THIS `recipes` table via
+-- `conrelid = 'recipes'::regclass`. `pg_constraint` is cluster-wide, so an
+-- unqualified `conname = '...'` lookup also sees constraints belonging to
+-- other schemas: the integration harness gives every test suite its own
+-- schema, and once ONE of them held `uq_recipe_component_stage` the check
+-- read as "already there" and every later schema was left with no unique
+-- constraint at all — Poster's recipe import then failed every row with
+-- 42P10 "no unique or exclusion constraint matching the ON CONFLICT
+-- specification". Production has a single schema and never saw it.
 DO $$
 BEGIN
   -- Drop the old (stage-less) unique constraint if it is still the 2-column one.
   IF EXISTS (
     SELECT 1 FROM pg_constraint
-     WHERE conname = 'uq_recipe_component'
+     WHERE conrelid = 'recipes'::regclass
+       AND conname = 'uq_recipe_component'
        AND pg_get_constraintdef(oid) = 'UNIQUE (product_id, component_product_id)'
   ) THEN
     ALTER TABLE recipes DROP CONSTRAINT uq_recipe_component;
@@ -26,7 +36,9 @@ BEGIN
 
   -- Add the stage-aware unique constraint if it is not present yet.
   IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'uq_recipe_component_stage'
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'recipes'::regclass
+       AND conname = 'uq_recipe_component_stage'
   ) THEN
     ALTER TABLE recipes
       ADD CONSTRAINT uq_recipe_component_stage
