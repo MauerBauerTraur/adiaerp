@@ -67,6 +67,11 @@ export type PosterIngredient = {
   ingredient_unit: string;
   ingredients_type?: number | string;
   limit_value?: number | string;
+  /**
+   * Ingredient prime cost as Poster tracks it — the same basis Poster uses for
+   * себестоимость. Scaled ×10000 (so divide by 10000 for so'm per unit).
+   */
+  prime_cost?: number | string;
 };
 
 export type PosterWorkshop = {

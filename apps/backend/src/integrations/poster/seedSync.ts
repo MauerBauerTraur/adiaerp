@@ -571,6 +571,19 @@ export async function syncIngredients(
       const name = String(r.ingredient_name ?? '').trim() || `Ingredient ${id}`;
       const unit = String(r.ingredient_unit ?? 'p');
       await upsertIngredient(id, name, unit);
+      // Raw-material cost from Poster's ingredient `prime_cost` — the SAME basis
+      // Poster uses for себестоимость, so ADIA BOM costs line up with Poster's.
+      // `prime_cost` is scaled ×10000 (1/10000 so'm), so divide by 10000.
+      // (Stock sync no longer overwrites cost_price — see stockSync.ts — so this
+      //  value persists between the 15-min leftover syncs.)
+      const primeCost = Math.round(Number(r.prime_cost ?? 0) / 10000);
+      if (Number.isFinite(primeCost) && primeCost > 0) {
+        await query(
+          `UPDATE products SET cost_price = $1, updated_at = now()
+           WHERE poster_ingredient_id = $2 AND type = 'raw' AND cost_price IS DISTINCT FROM $1`,
+          [primeCost, id],
+        );
+      }
       applied += 1;
     }
     await finishSyncRun(runId, 'ok', { recordsIn: rows.length, recordsApplied: applied });
@@ -776,8 +789,18 @@ export async function syncPrepacks(
           // For piece-counted ingredients (unit "p"), Poster stores structure_netto
           // in grams (not pieces), so netto is in a different unit than brutto.
           // Always use brutto for these to avoid treating gram-netto as piece count.
-          const isPcs = ingUnit.toLowerCase() === 'p' || ingUnit.toLowerCase() === 'pcs';
-          const qtyConverted = (!isPcs && nettoConverted > 0) ? nettoConverted : bruttoConverted;
+          // Consumption qty tracks BRUTTO — the gross amount actually taken from
+          // stock, which is exactly what Poster charges to себестоимость. We do
+          // NOT prefer `structure_netto`: in this Poster account netto is
+          // unreliable — sometimes it is the batch yield (e.g. 1000 g, which
+          // inflated qty_per_unit to 1.0 and blew cost up ~10000x: мясо курицы),
+          // and sometimes a rounded net weight below brutto (which under-counted
+          // vs Poster: тесто сслойка used 1.0 instead of brutto 1.453). Brutto is
+          // both the physically-consumed quantity and the one Poster costs from,
+          // so it is the single source of truth. Netto is only a fallback when
+          // brutto is missing/zero. `structure_unit` "g" → ADIA "kg" is already
+          // applied by normaliseQty above.
+          const qtyConverted = bruttoConverted > 0 ? bruttoConverted : nettoConverted;
           // Use the prepack's batch yield (already in kg) as the divisor so
           // qty_per_unit = "ingredient_ADIA_unit per 1 kg of finished prepack".
           const safeYield = batchYieldKg > 0 ? batchYieldKg : 1;
@@ -892,8 +915,10 @@ async function resolveBomComponents(
     const netto = ing.structure_netto !== undefined
       ? normaliseQty(String(ing.structure_unit ?? ''), ingUnit, ing.structure_netto)
       : brutto;
-    const isPcs = ingUnit.toLowerCase() === 'p' || ingUnit.toLowerCase() === 'pcs';
-    const qty = (!isPcs && netto > 0) ? netto : brutto;
+    // Use BRUTTO — the gross consumption Poster costs from (see syncPrepacks).
+    // Netto is unreliable in this account (yield-in-netto, or a rounded net
+    // weight below brutto) so it is only a fallback when brutto is missing.
+    const qty = brutto > 0 ? brutto : netto;
     if (qty > 0) out.push({ componentProductId: id, qtyPerUnit: qty, brutto });
   }
   return out;

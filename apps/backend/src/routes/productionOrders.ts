@@ -763,7 +763,10 @@ productionOrdersRouter.get(
 );
 
 // GET /api/production-orders/raw-materials-usage?from=YYYY-MM-DD&to=YYYY-MM-DD
-// Returns aggregated raw material consumption from production_dispatches.
+// Aggregated raw-material consumption from stock_movements (reason='production_input').
+// This is the PERSISTENT record of what production actually consumed, so the date
+// filter works for any historical day — unlike production_dispatches, which is
+// deleted together with its production order and therefore loses history.
 productionOrdersRouter.get(
   '/raw-materials-usage',
   authenticate,
@@ -778,21 +781,21 @@ productionOrdersRouter.get(
 
     // Raw materials plus in-house semi-finished inputs (крем каймак and the
     // like) — both are consumed by production and belong in this report.
-    // Г/П and finished goods travel through production_dispatches too, but
-    // they are the output, not xomashyo.
-    const conditions: string[] = [`p.type IN ('raw', 'semi')`];
+    // production_input rows for Г/П / finished goods are the output side and are
+    // excluded by the type filter.
+    const conditions: string[] = [`m.reason = 'production_input'`, `p.type IN ('raw', 'semi')`];
     const params: string[] = [];
 
     if (fromRaw) {
       params.push(fromRaw);
-      conditions.push(`pd.created_at::date >= $${params.length}`);
+      conditions.push(`m.created_at::date >= $${params.length}`);
     }
     if (toRaw) {
       params.push(toRaw);
-      conditions.push(`pd.created_at::date <= $${params.length}`);
+      conditions.push(`m.created_at::date <= $${params.length}`);
     }
 
-    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const where = `WHERE ${conditions.join(' AND ')}`;
 
     type UsageRow = {
       product_id: string;
@@ -800,20 +803,26 @@ productionOrdersRouter.get(
       unit: string;
       total_qty: string;
       order_count: string;
+      total_cost: string | null;
     };
 
     const { rows } = await query<UsageRow>(
       `SELECT
-         pd.product_id::text,
-         pd.product_name,
-         pd.product_unit AS unit,
-         SUM(pd.qty_needed)::text AS total_qty,
-         COUNT(DISTINCT pd.production_order_id)::text AS order_count
-       FROM production_dispatches pd
-       JOIN products p ON p.id = pd.product_id
+         m.product_id::text,
+         p.name AS product_name,
+         p.unit AS unit,
+         SUM(m.qty)::text AS total_qty,
+         COUNT(DISTINCT m.production_order_id)::text AS order_count,
+         -- Summa = consumed qty × current cost_price (so'm). NULL when the
+         -- product has no cost yet, so the UI can show "—" instead of 0.
+         CASE WHEN p.cost_price IS NULL THEN NULL
+              ELSE ROUND(SUM(m.qty) * p.cost_price, 2)::text
+         END AS total_cost
+       FROM stock_movements m
+       JOIN products p ON p.id = m.product_id
        ${where}
-       GROUP BY pd.product_id, pd.product_name, pd.product_unit
-       ORDER BY SUM(pd.qty_needed) DESC`,
+       GROUP BY m.product_id, p.name, p.unit, p.cost_price
+       ORDER BY SUM(m.qty) DESC`,
       params,
     );
 
@@ -824,6 +833,7 @@ productionOrdersRouter.get(
         unit: r.unit,
         total_qty: Number(r.total_qty),
         order_count: Number(r.order_count),
+        total_cost: r.total_cost === null ? null : Number(r.total_cost),
       })),
     );
   }),
