@@ -119,6 +119,17 @@ export interface MeResponse {
   locations: MeLocation[];
   /** `null` for PMs who have not selected one yet (chain-wide view). */
   active_location_id: number | null;
+  /**
+   * Per-user page (bo'lim) whitelist — migration 0061. An empty array means
+   * "no override": the role default applies. Absent on an older backend, so
+   * consumers must treat `undefined` the same as empty.
+   */
+  allowed_paths?: string[];
+}
+
+/** `PUT /api/users/:id/pages` request + `GET .../pages` response. */
+export interface UserPageAccess {
+  paths: string[];
 }
 
 export interface Location {
@@ -308,6 +319,8 @@ export interface LoginResponse {
   /** Backward-compat alias for `access_token`. */
   token?: string;
   user: User;
+  /** Nav whitelist, seeded here so the sidebar is right on the first paint. */
+  allowed_paths?: string[];
 }
 
 /** `POST /api/auth/refresh` response — rotated token pair. */

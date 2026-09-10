@@ -60,6 +60,7 @@ export function LoginPage() {
           refreshToken: result.refresh_token,
         },
         result.user,
+        result.allowed_paths ?? [],
       );
       navigate(redirectTo, { replace: true });
     } catch (err: unknown) {

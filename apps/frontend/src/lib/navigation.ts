@@ -344,6 +344,18 @@ export const NAV_SECTIONS: readonly NavSection[] = [
 ];
 
 /**
+ * Groups kept out of the sidebar rail. Their routes still resolve — this
+ * only hides the icons (and the matching rows in the per-user access
+ * dialog, so an admin is not offered a screen nobody can reach).
+ */
+export const HIDDEN_GROUPS: readonly NavGroupKey[] = ['forecasts'];
+
+/** Every path that can be granted to a user — mirror of the backend list. */
+export const ALL_NAV_PATHS: readonly string[] = NAV_SECTIONS.flatMap((s) =>
+  s.items.map((i) => i.path),
+);
+
+/**
  * Filter the navigation sections down to those the role may see.
  * Empty sections are dropped.
  */
@@ -352,6 +364,75 @@ export function navSectionsForRole(role: Role): NavSection[] {
     ...section,
     items: section.items.filter((item) => item.roles.includes(role)),
   })).filter((section) => section.items.length > 0);
+}
+
+/**
+ * Per-user page whitelist (migration 0061), layered on top of the role
+ * filter.
+ *
+ * `allowedPaths` is what `/api/auth/me` returned:
+ *   - empty (or null)  → no override; the role default applies. This is the
+ *     state of every account that predates the feature, so the fallback must
+ *     stay permissive.
+ *   - non-empty        → only those paths, intersected with the role filter.
+ *     The role is still the outer gate: granting a path a role cannot see
+ *     does not reveal it (the API would refuse anyway).
+ */
+export function navSectionsFor(
+  role: Role,
+  allowedPaths: readonly string[] | null | undefined,
+): NavSection[] {
+  const sections = navSectionsForRole(role);
+  if (allowedPaths === null || allowedPaths === undefined || allowedPaths.length === 0) {
+    return sections;
+  }
+  const allowed = new Set(allowedPaths);
+  return sections
+    .map((section) => ({
+      ...section,
+      items: section.items.filter((item) => allowed.has(item.path)),
+    }))
+    .filter((section) => section.items.length > 0);
+}
+
+/**
+ * Is `pathname` reachable for this user?
+ *
+ * Routes that are not nav entries (`/stock`, `/replenishment/:id`,
+ * `/dashboard/operations`, …) resolve through the nearest matching nav item
+ * by prefix; a path matching no nav item at all is always allowed, so
+ * utility screens and detail routes are never accidentally locked out.
+ */
+export function isPathAllowed(
+  pathname: string,
+  role: Role,
+  allowedPaths: readonly string[] | null | undefined,
+): boolean {
+  const owner = findGroupForPath(pathname);
+  if (owner === null) return true;
+  const visible = navSectionsFor(role, allowedPaths);
+  return visible.some((section) =>
+    section.items.some(
+      (item) => pathname === item.path || pathname.startsWith(`${item.path}/`),
+    ),
+  );
+}
+
+/**
+ * The screen to land on when the user's current target is not permitted —
+ * the first item of the first group they can actually see. `null` when the
+ * whitelist leaves them with nothing (the caller then shows an explanation
+ * rather than redirect-looping).
+ */
+export function firstAllowedPath(
+  role: Role,
+  allowedPaths: readonly string[] | null | undefined,
+): string | null {
+  for (const section of navSectionsFor(role, allowedPaths)) {
+    const landing = resolveGroupLanding(section, role);
+    if (landing !== null) return landing;
+  }
+  return null;
 }
 
 /**

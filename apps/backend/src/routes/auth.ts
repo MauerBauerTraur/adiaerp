@@ -9,6 +9,8 @@
  *   POST /api/auth/logout   — { refresh_token }  (or Bearer header)
  *                             -> 204
  *   GET  /api/auth/me       — current principal (access-token gated)
+ *                             -> { user, locations, active_location_id,
+ *                                  allowed_paths }
  *
  * Passwords are verified with `bcryptjs` against `users.password_hash`.
  * Login + refresh failures return a single generic 401 — the response
@@ -133,6 +135,21 @@ function toPublicUser(row: UserRow): PublicUser {
   };
 }
 
+/**
+ * Per-user page (bo'lim) whitelist — migration 0061.
+ *
+ * An empty array means "no override": the client falls back to whatever the
+ * user's ROLE allows, which is how every account behaved before the feature
+ * existed. A non-empty array is the exact set of screens to show.
+ */
+async function fetchAllowedPaths(userId: number): Promise<string[]> {
+  const { rows } = await query<{ path: string }>(
+    `SELECT path FROM user_page_access WHERE user_id = $1 ORDER BY path`,
+    [userId],
+  );
+  return rows.map((r) => r.path);
+}
+
 /** Truncate a UA string defensively before persisting (DB column is TEXT,
  *  but a multi-MB header is not useful audit data). */
 function readUserAgent(req: { header: (n: string) => string | undefined }): string | null {
@@ -206,6 +223,10 @@ authRouter.post(
       refresh_token: issued.rawToken,
       token: accessToken,
       user: publicUser,
+      // Seed the nav whitelist with the login response so the sidebar renders
+      // the correct groups immediately — `/api/auth/me` does not re-run after
+      // a fresh login (see AuthProvider).
+      allowed_paths: await fetchAllowedPaths(publicUser.id),
     });
   }),
 );
@@ -325,6 +346,7 @@ authRouter.get(
       user: toPublicUser(user),
       locations,
       active_location_id: principal.activeLocationId,
+      allowed_paths: await fetchAllowedPaths(principal.userId),
     });
   }),
 );

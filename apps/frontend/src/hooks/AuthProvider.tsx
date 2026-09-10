@@ -41,6 +41,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
   const [user, setUser] = useState<User | null>(null);
   const [locations, setLocations] = useState<MeLocation[]>([]);
+  const [allowedPaths, setAllowedPaths] = useState<string[]>([]);
   const [activeLocationId, setActiveLocationIdState] = useState<number | null>(
     () => getActiveLocation(),
   );
@@ -56,11 +57,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     (
       tokens: { accessToken: string; refreshToken: string },
       nextUser: User,
+      nextAllowedPaths: string[] = [],
     ) => {
       setTokens(tokens);
       setTokenState(tokens.accessToken);
       setUser(nextUser);
       setLocations([]);
+      // Seeded from the login response — the mount-time /api/auth/me effect
+      // does not re-run after login, so without this the sidebar would show
+      // the plain role default until the next reload.
+      setAllowedPaths(nextAllowedPaths);
       // F4.11 Bug-MAJ-01 — the mount-time `/api/auth/me` hydration
       // effect only runs once per <AuthProvider /> mount, so it does
       // NOT re-fire after a fresh login. If we left the active
@@ -116,6 +122,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setTokenState(null);
     setUser(null);
     setLocations([]);
+    setAllowedPaths([]);
     setActiveLocationIdState(null);
   }, []);
 
@@ -164,6 +171,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         setUser(me.user);
         setLocations(me.locations ?? []);
+        setAllowedPaths(me.allowed_paths ?? []);
         // Prefer the server-side `active_location_id` (it knows the
         // user's primary) over the localStorage value, which may be
         // stale if the user was reassigned elsewhere. The server has
@@ -186,6 +194,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setTokenState(null);
           setUser(null);
           setLocations([]);
+          setAllowedPaths([]);
           setActiveLocationIdState(null);
         }
       })
@@ -208,6 +217,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isAuthenticated: token !== null,
       isHydrating,
       locations,
+      allowedPaths,
       activeLocationId,
       login,
       logout,
@@ -218,6 +228,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       token,
       isHydrating,
       locations,
+      allowedPaths,
       activeLocationId,
       login,
       logout,

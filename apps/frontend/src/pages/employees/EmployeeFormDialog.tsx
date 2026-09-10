@@ -15,14 +15,13 @@ import { Select } from '@/components/ui/select';
 import { useToast } from '@/components/ui/toast';
 import { apiRequest, ApiError } from '@/lib/api-client';
 import { ROLE_OPTIONS } from '@/lib/labels';
-import type { Location, Role, User } from '@/lib/types';
+import type { Role, User } from '@/lib/types';
 
 interface EmployeeFormDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** If provided: edit mode (pre-fill from user, PATCH). If null: create mode (POST). */
   user?: User | null;
-  locations: Location[];
   onSaved: () => void;
 }
 
@@ -32,8 +31,6 @@ interface FormState {
   password: string;
   role: Role;
   telegramId: string;
-  selectedLocationIds: Set<number>;
-  primaryLocationId: number | null;
 }
 
 const EMPTY_FORM: FormState = {
@@ -42,12 +39,7 @@ const EMPTY_FORM: FormState = {
   password: '',
   role: 'production_manager',
   telegramId: '',
-  selectedLocationIds: new Set(),
-  primaryLocationId: null,
 };
-
-/** Roles whose principals are NOT bound to a bo'g'in (chain-wide view). */
-const CHAIN_WIDE_ROLES: ReadonlySet<Role> = new Set(['super_admin', 'pm', 'ai_assistant']);
 
 const USERNAME_PATTERN = /^[a-z0-9._-]{2,32}$/;
 
@@ -55,7 +47,6 @@ export function EmployeeFormDialog({
   open,
   onOpenChange,
   user,
-  locations,
   onSaved,
 }: EmployeeFormDialogProps) {
   const isEdit = user != null;
@@ -73,41 +64,13 @@ export function EmployeeFormDialog({
           password: '',
           role: user.role,
           telegramId: user.telegram_id != null ? String(user.telegram_id) : '',
-          selectedLocationIds: new Set(),
-          primaryLocationId: null,
         });
       } else {
-        setForm({ ...EMPTY_FORM, selectedLocationIds: new Set() });
+        setForm({ ...EMPTY_FORM });
       }
       setError(null);
     }
   }, [open, user]);
-
-  const locationRequired = !isEdit && !CHAIN_WIDE_ROLES.has(form.role);
-
-  function toggleLocation(locationId: number) {
-    setForm((current) => {
-      const next = new Set(current.selectedLocationIds);
-      let primary = current.primaryLocationId;
-      if (next.has(locationId)) {
-        next.delete(locationId);
-        if (primary === locationId) {
-          primary = next.size === 0 ? null : (next.values().next().value ?? null);
-        }
-      } else {
-        next.add(locationId);
-        if (primary === null) primary = locationId;
-      }
-      return { ...current, selectedLocationIds: next, primaryLocationId: primary };
-    });
-  }
-
-  function setPrimary(locationId: number) {
-    setForm((current) => {
-      if (!current.selectedLocationIds.has(locationId)) return current;
-      return { ...current, primaryLocationId: locationId };
-    });
-  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -135,18 +98,6 @@ export function EmployeeFormDialog({
     if (isEdit && form.password !== '' && form.password.length < 8) {
       setError("Yangi parol kamida 8 belgidan iborat bo'lishi kerak.");
       return;
-    }
-
-    const locationIds = [...form.selectedLocationIds];
-    if (locationRequired) {
-      if (locationIds.length === 0) {
-        setError("Bu rol uchun kamida bitta bo'g'in tanlash shart.");
-        return;
-      }
-      if (form.primaryLocationId === null || !locationIds.includes(form.primaryLocationId)) {
-        setError("Asosiy bo'g'in tanlanmagan.");
-        return;
-      }
     }
 
     let telegramIdValue: number | null | undefined;
@@ -187,10 +138,6 @@ export function EmployeeFormDialog({
           password: form.password,
           role: form.role,
         };
-        if (!CHAIN_WIDE_ROLES.has(form.role)) {
-          body['location_ids'] = locationIds;
-          body['primary_location_id'] = form.primaryLocationId;
-        }
         if (telegramIdValue != null) {
           body['telegram_id'] = telegramIdValue;
         }
@@ -214,7 +161,7 @@ export function EmployeeFormDialog({
           <DialogDescription>
             {isEdit
               ? "Foydalanuvchi ma'lumotlarini yangilang. Parolni o'zgartirmasangiz, bo'sh qoldiring."
-              : "Foydalanuvchi ma'lumotlari va biriktiriladigan bo'g'inlarni kiriting."}
+              : "Foydalanuvchi ma'lumotlarini kiriting. Bo'g'in rolga qarab avtomatik biriktiriladi; ko'rinadigan bo'limlar \"Bo'limlar\" oynasida sozlanadi."}
           </DialogDescription>
         </DialogHeader>
 
@@ -302,72 +249,6 @@ export function EmployeeFormDialog({
               onChange={(e) => setForm({ ...form, telegramId: e.target.value })}
             />
           </div>
-
-          {!isEdit && (
-            <fieldset
-              className="space-y-2 rounded-md border border-border p-3"
-              disabled={!locationRequired}
-              aria-disabled={!locationRequired}
-            >
-              <legend className="px-1 text-sm font-medium">
-                {"Bo'g'inlar"}
-                {locationRequired ? (
-                  <span className="text-muted-foreground"> (kamida bittasi)</span>
-                ) : (
-                  <span className="text-muted-foreground"> — kerak emas</span>
-                )}
-              </legend>
-
-              {locations.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  {"Bo'g'inlar ro'yxati topilmadi."}
-                </p>
-              ) : (
-                <ul className="space-y-1">
-                  {locations.map((loc) => {
-                    const selected = form.selectedLocationIds.has(loc.id);
-                    const isPrimary = form.primaryLocationId === loc.id;
-                    return (
-                      <li
-                        key={loc.id}
-                        className="flex items-center justify-between gap-3 rounded-sm px-2 py-1 hover:bg-muted/40"
-                      >
-                        <label
-                          className="flex flex-1 items-center gap-2 text-sm"
-                          htmlFor={`employee-loc-${loc.id}`}
-                        >
-                          <input
-                            id={`employee-loc-${loc.id}`}
-                            type="checkbox"
-                            className="size-4 rounded border-border"
-                            checked={selected}
-                            onChange={() => toggleLocation(loc.id)}
-                            disabled={!locationRequired}
-                          />
-                          <span>{loc.name}</span>
-                        </label>
-                        <label
-                          className="flex items-center gap-1 text-xs text-muted-foreground"
-                          htmlFor={`employee-primary-${loc.id}`}
-                        >
-                          <input
-                            id={`employee-primary-${loc.id}`}
-                            type="radio"
-                            name="primary_location"
-                            className="size-3"
-                            checked={isPrimary}
-                            disabled={!selected || !locationRequired}
-                            onChange={() => setPrimary(loc.id)}
-                          />
-                          Asosiy
-                        </label>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </fieldset>
-          )}
 
           {error && (
             <p

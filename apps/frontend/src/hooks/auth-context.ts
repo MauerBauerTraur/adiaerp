@@ -20,10 +20,18 @@ export interface AuthContextValue {
    * back to the user's primary location.
    */
   activeLocationId: number | null;
+  /**
+   * Per-user page whitelist (migration 0061) — the screens this user may
+   * open. **Empty means no override**, i.e. the role default applies; it is
+   * NOT "no access". Every consumer goes through `navSectionsFor` /
+   * `isPathAllowed` in `lib/navigation.ts` rather than reading this directly.
+   */
+  allowedPaths: string[];
   /** Persists the access+refresh pair and updates context state. */
   login: (
     tokens: { accessToken: string; refreshToken: string },
     user: User,
+    allowedPaths?: string[],
   ) => void;
   /**
    * Revokes the refresh token on the backend (best-effort, idempotent)

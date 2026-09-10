@@ -35,6 +35,7 @@ function fakeAuth(
     isAuthenticated: true,
     isHydrating: false,
     locations,
+    allowedPaths: [],
     activeLocationId,
     login: () => {},
     logout: async () => {},

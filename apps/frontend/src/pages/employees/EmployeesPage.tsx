@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import {
+  LayoutGrid,
   MapPin,
   Pencil,
   Plus,
@@ -45,7 +46,7 @@ import { ROLE_LABELS, ROLE_OPTIONS } from '@/lib/labels';
 import type { Location, Role, User } from '@/lib/types';
 import { useToast } from '@/components/ui/toast';
 import { EmployeeFormDialog } from './EmployeeFormDialog';
-import { EmployeeLocationsDialog } from './EmployeeLocationsDialog';
+import { EmployeeSectionsDialog } from './EmployeeSectionsDialog';
 import { TelegramLinkButton } from './TelegramLinkButton';
 
 // ─── Role color scheme ────────────────────────────────────────────────────────
@@ -155,7 +156,7 @@ export function EmployeesPage() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
-  const [locationsUser, setLocationsUser] = useState<User | null>(null);
+  const [sectionsUser, setSectionsUser] = useState<User | null>(null);
   const [deletingUser, setDeletingUser] = useState<User | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [view, setView] = useViewMode('employees', 'card');
@@ -288,10 +289,10 @@ export function EmployeesPage() {
             variant="ghost"
             size="sm"
             className="h-8 gap-1.5 text-xs"
-            onClick={() => setLocationsUser(u)}
+            onClick={() => setSectionsUser(u)}
           >
-            <MapPin className="size-3.5" />
-            {"Bo'g'inlar"}
+            <LayoutGrid className="size-3.5" />
+            {"Bo'limlar"}
           </Button>
           <div className="flex-1" />
           <TelegramLinkButton user={u} />
@@ -451,10 +452,10 @@ export function EmployeesPage() {
                           variant="ghost"
                           size="sm"
                           className="h-8 gap-1.5 text-xs"
-                          onClick={() => setLocationsUser(u)}
+                          onClick={() => setSectionsUser(u)}
                         >
-                          <MapPin className="size-3.5" />
-                          {"Bo'g'inlar"}
+                          <LayoutGrid className="size-3.5" />
+                          {"Bo'limlar"}
                         </Button>
                         {!isSelf && (
                           <Button
@@ -481,7 +482,6 @@ export function EmployeesPage() {
       <EmployeeFormDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
-        locations={locations.data ?? []}
         onSaved={users.refetch}
       />
 
@@ -489,15 +489,12 @@ export function EmployeesPage() {
         open={editingUser !== null}
         onOpenChange={(open) => { if (!open) setEditingUser(null); }}
         user={editingUser}
-        locations={locations.data ?? []}
         onSaved={users.refetch}
       />
 
-      <EmployeeLocationsDialog
-        user={locationsUser}
-        allLocations={locations.data ?? []}
-        onOpenChange={(open) => { if (!open) setLocationsUser(null); }}
-        onChanged={users.refetch}
+      <EmployeeSectionsDialog
+        user={sectionsUser}
+        onOpenChange={(open) => { if (!open) setSectionsUser(null); }}
       />
 
       <Dialog

@@ -32,6 +32,7 @@ function makeAuth(
     isAuthenticated: true,
     isHydrating: false,
     locations: [],
+    allowedPaths: [],
     activeLocationId: null,
     login: () => {},
     logout: async () => {},

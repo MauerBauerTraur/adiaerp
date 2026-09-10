@@ -130,6 +130,7 @@ function fakeAuth(): AuthContextValue {
     isAuthenticated: true,
     isHydrating: false,
     locations: [],
+    allowedPaths: [],
     activeLocationId: null,
     login: () => {},
     logout: async () => {},

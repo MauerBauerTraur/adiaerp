@@ -1,7 +1,7 @@
 import { NavLink, useLocation } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/hooks/useAuth';
-import { NAV_SECTIONS, type NavGroupKey } from '@/lib/navigation';
+import { navSectionsFor, type NavGroupKey } from '@/lib/navigation';
 
 interface PageTabsProps {
   /** Which group to render tabs for. */
@@ -14,16 +14,20 @@ interface PageTabsProps {
  * that drives an `aria-selected` state from React Router so screen
  * readers and keyboard users see the active section.
  *
- * Items are RBAC-filtered against the active user's role — exactly
- * the same filter the sidebar uses, so the two stay in sync.
+ * Items are filtered by the active user's role AND their per-user page
+ * whitelist — exactly the same filter the sidebar uses, so the two stay
+ * in sync.
  */
 export function PageTabs({ group }: PageTabsProps) {
-  const { user } = useAuth();
+  const { user, allowedPaths } = useAuth();
   const location = useLocation();
-  const section = NAV_SECTIONS.find((s) => s.key === group);
-  if (!section || !user) return null;
+  if (!user) return null;
+  const section = navSectionsFor(user.role, allowedPaths).find(
+    (s) => s.key === group,
+  );
+  if (!section) return null;
 
-  const items = section.items.filter((item) => item.roles.includes(user.role));
+  const items = section.items;
   if (items.length === 0) return null;
 
   return (

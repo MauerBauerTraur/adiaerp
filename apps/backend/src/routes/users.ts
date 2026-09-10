@@ -8,20 +8,24 @@
  *   POST /api/users/:id/locations         — assign a location
  *   DELETE /api/users/:id/locations/:lid  — unassign a location
  *   PUT  /api/users/:id/locations/:lid/primary — swap primary (atomic)
+ *   GET  /api/users/:id/pages             — list the page (bo'lim) whitelist
+ *   PUT  /api/users/:id/pages             — replace the page whitelist
  *
- * RBAC: PM does any write; users may read their own `:id/locations`.
+ * RBAC: PM does any write; users may read their own `:id/locations`
+ * and `:id/pages`.
  * Every change is audit-logged.
  */
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { query, withTransaction } from '../db/index.js';
 import { AppError } from '../errors/index.js';
-import { ROLES } from '../auth/roles.js';
+import { ROLES, SUPER_ADMIN_ROLES } from '../auth/roles.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
 import { writeAudit } from '../lib/audit.js';
 import { getPrincipal } from '../lib/principal.js';
+import { isNavPath } from '../lib/navPaths.js';
 import {
   getLinkStatus,
   issueLinkToken,
@@ -129,6 +133,46 @@ function parseLocationIds(body: Record<string, unknown>): number[] | undefined {
   return out;
 }
 
+/**
+ * Default location for a scoped role, by `locations.type`, in preference
+ * order. The Foydalanuvchilar screen no longer asks the admin to pick a
+ * bo'g'in — it now assigns *pages*, not warehouses — so `POST /api/users`
+ * derives the location from the role instead. The value is still a real
+ * `user_locations` row: every RBAC-scoped endpoint, the stock ledger, the
+ * dashboards and the Telegram bot read `users.location_id`, so a scoped
+ * user without one cannot work.
+ *
+ * A PM who needs a different bo'g'in still changes it through the
+ * `/:id/locations` endpoints (Ma'lumotnoma → Bo'g'inlar).
+ */
+const DEFAULT_LOCATION_TYPES_BY_ROLE: Readonly<Record<string, readonly string[]>> = {
+  raw_warehouse_manager: ['raw_warehouse'],
+  production_manager: ['production'],
+  supply_manager: ['supply', 'sex_storage'],
+  central_warehouse_manager: ['central_warehouse'],
+  store_manager: ['store'],
+};
+
+/**
+ * Resolve the location a freshly-created scoped user should be attached to.
+ * Picks the lowest-id location of the first matching type; returns null when
+ * the chain has no location of any candidate type (caller turns that into a
+ * 422 the admin can act on).
+ */
+async function resolveDefaultLocationId(role: string): Promise<number | null> {
+  const types = DEFAULT_LOCATION_TYPES_BY_ROLE[role];
+  if (types === undefined || types.length === 0) return null;
+  const { rows } = await query<{ id: string }>(
+    `SELECT id FROM locations
+      WHERE type::text = ANY($1::text[])
+      ORDER BY array_position($1::text[], type::text), id
+      LIMIT 1`,
+    [types],
+  );
+  const row = rows[0];
+  return row === undefined ? null : Number(row.id);
+}
+
 // GET /api/users  — pm only.
 usersRouter.get(
   '/',
@@ -194,8 +238,19 @@ usersRouter.post(
     }
 
     // Mirror the DB constraint at the boundary for a clear 422 instead of a 500.
+    // No location supplied (the UI stopped sending one) → derive it from the
+    // role so a scoped user is still usable everywhere `users.location_id`
+    // is read.
     if (!CHAIN_WIDE_ROLES.has(role) && primaryId === null) {
-      throw AppError.validation(`Role "${role}" requires at least one location.`);
+      const derived = await resolveDefaultLocationId(role);
+      if (derived === null) {
+        throw AppError.validation(
+          `Role "${role}" requires a location, and no matching bo'g'in exists. ` +
+            `Create one under Ma'lumotnoma → Bo'g'inlar first.`,
+        );
+      }
+      attached = [derived];
+      primaryId = derived;
     }
 
     // Reject a duplicate username with a clean 409 rather than a raw DB error.
@@ -718,5 +773,94 @@ usersRouter.put(
       });
     });
     res.status(204).end();
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Per-user page (bo'lim) access — 0061_user_page_access.sql
+// ---------------------------------------------------------------------------
+// Whitelist semantics, with a role fallback:
+//   - no rows  → no restriction; the user sees every screen their ROLE allows.
+//   - ≥ 1 row  → only those paths (still intersected with the role's nav).
+// `PUT` replaces the whole set; sending an empty array clears the override and
+// returns the user to the plain role default.
+
+/** Validate a `paths` array against the canonical nav list. */
+function parsePagePaths(body: Record<string, unknown>): string[] {
+  const raw = body['paths'];
+  if (!Array.isArray(raw)) {
+    throw AppError.validation('Field "paths" must be an array of navigation paths.');
+  }
+  const seen = new Set<string>();
+  for (const value of raw) {
+    if (!isNavPath(value)) {
+      throw AppError.validation(
+        `Unknown navigation path ${JSON.stringify(value)} in "paths".`,
+      );
+    }
+    seen.add(value);
+  }
+  return [...seen];
+}
+
+// GET /api/users/:id/pages — pm or self.
+usersRouter.get(
+  '/:id/pages',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const userId = parseIdParam(req.params['id'], 'id');
+    // `authorize('pm')` on the write side lets `super_admin` through, so the
+    // read side has to as well — otherwise an owner could set someone's
+    // access but never see it.
+    if (!SUPER_ADMIN_ROLES.has(principal.role) && principal.userId !== userId) {
+      throw AppError.forbidden('You may only inspect your own page access.');
+    }
+    const { rows } = await query<{ path: string }>(
+      `SELECT path FROM user_page_access WHERE user_id = $1 ORDER BY path`,
+      [userId],
+    );
+    res.status(200).json({ paths: rows.map((r) => r.path) });
+  }),
+);
+
+// PUT /api/users/:id/pages — pm only. Replaces the whole whitelist.
+usersRouter.put(
+  '/:id/pages',
+  authenticate,
+  authorize('pm'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const userId = parseIdParam(req.params['id'], 'id');
+    const paths = parsePagePaths(asObject(req.body));
+
+    const { rows: userRows } = await query<{ id: string }>(
+      `SELECT id FROM users WHERE id = $1 AND is_active = TRUE`,
+      [userId],
+    );
+    if (userRows[0] === undefined) {
+      throw AppError.notFound('User not found.');
+    }
+
+    await withTransaction(async (tx) => {
+      // Replace-all: delete then insert inside one transaction, so a
+      // concurrent reader never observes a half-applied whitelist.
+      await tx.query(`DELETE FROM user_page_access WHERE user_id = $1`, [userId]);
+      if (paths.length > 0) {
+        await tx.query(
+          `INSERT INTO user_page_access (user_id, path, granted_by_user_id)
+           SELECT $1, unnest($2::text[]), $3`,
+          [userId, paths, principal.userId],
+        );
+      }
+      await writeAudit(tx, {
+        actorUserId: principal.userId,
+        action: 'user.pages.set',
+        entity: 'users',
+        entityId: userId,
+        payload: { paths },
+      });
+    });
+    res.status(200).json({ paths });
   }),
 );

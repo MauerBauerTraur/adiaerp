@@ -17,13 +17,14 @@ function fakeUser(role: Role): User {
   };
 }
 
-function fakeAuth(user: User): AuthContextValue {
+function fakeAuth(user: User, allowedPaths: string[] = []): AuthContextValue {
   return {
     user,
     token: 'test-token',
     isAuthenticated: true,
     isHydrating: false,
     locations: [],
+    allowedPaths,
     activeLocationId: null,
     login: () => {},
     logout: async () => {},
@@ -35,10 +36,12 @@ function renderTabs(opts: {
   group: 'dashboard' | 'forecasts' | 'modules' | 'reference';
   role: Role;
   initialPath: string;
+  /** Per-user page whitelist; empty = no override (migration 0061). */
+  allowedPaths?: string[];
 }) {
   const user = fakeUser(opts.role);
   return render(
-    <AuthContext.Provider value={fakeAuth(user)}>
+    <AuthContext.Provider value={fakeAuth(user, opts.allowedPaths ?? [])}>
       <ToastProvider>
         <MemoryRouter initialEntries={[opts.initialPath]}>
           <PageTabs group={opts.group} />
@@ -62,8 +65,10 @@ describe('PageTabs', () => {
       'central-warehouse',
       'stores',
       'replenishment',
-      'production-orders',
+      // `/production-orders` moved to the Ishlab chiqarish group — it is
+      // no longer a Modullar tab.
       'purchase-orders',
+      'sotuvlar',
     ]) {
       expect(within(list).getByTestId(`page-tab-${key}`)).toBeInTheDocument();
     }
@@ -139,5 +144,30 @@ describe('PageTabs', () => {
       </AuthContext.Provider>,
     );
     expect(screen.queryByTestId('page-tabs')).not.toBeInTheDocument();
+  });
+});
+
+describe('PageTabs — per-user page whitelist (0061)', () => {
+  it('shows only the granted tabs', () => {
+    renderTabs({
+      group: 'modules',
+      role: 'pm',
+      initialPath: '/sotuvlar',
+      allowedPaths: ['/sotuvlar', '/cashier/receipts'],
+    });
+    const list = screen.getByTestId('page-tabs');
+    expect(within(list).getByTestId('page-tab-sotuvlar')).toBeTruthy();
+    expect(within(list).getByTestId('page-tab-cashier/receipts')).toBeTruthy();
+    expect(within(list).queryByTestId('page-tab-raw-warehouse')).toBeNull();
+  });
+
+  it('renders nothing when the group has no granted tabs', () => {
+    renderTabs({
+      group: 'modules',
+      role: 'pm',
+      initialPath: '/products',
+      allowedPaths: ['/products'],
+    });
+    expect(screen.queryByTestId('page-tabs')).toBeNull();
   });
 });

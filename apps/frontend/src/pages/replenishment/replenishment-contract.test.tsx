@@ -299,6 +299,7 @@ function renderDetail(
               is_primary: true,
             },
           ],
+    allowedPaths: [],
     activeLocationId: locationId,
     login: () => {},
     logout: async () => {},

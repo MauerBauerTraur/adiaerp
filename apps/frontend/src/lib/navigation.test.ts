@@ -1,8 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
   navSectionsForRole,
+  navSectionsFor,
+  isPathAllowed,
+  firstAllowedPath,
   findGroupForPath,
   resolveGroupLanding,
+  ALL_NAV_PATHS,
   NAV_SECTIONS,
 } from './navigation';
 
@@ -127,8 +131,12 @@ describe('findGroupForPath', () => {
     expect(findGroupForPath('/forecasts')?.key).toBe('forecasts');
   });
 
-  it('returns null for unknown paths (e.g. /admin/import-warnings)', () => {
-    expect(findGroupForPath('/admin/import-warnings')).toBeNull();
+  it('resolves /admin/import-warnings — it is a Ma\'lumotnoma item', () => {
+    expect(findGroupForPath('/admin/import-warnings')?.key).toBe('reference');
+  });
+
+  it('returns null for paths outside the nav model (e.g. /stock)', () => {
+    expect(findGroupForPath('/stock')).toBeNull();
   });
 });
 
@@ -158,5 +166,85 @@ describe('resolveGroupLanding', () => {
     };
     expect(resolveGroupLanding(pmOnly, 'store_manager')).toBeNull();
     expect(resolveGroupLanding(pmOnly, 'pm')).toBe('/employees');
+  });
+});
+
+
+// ─── Per-user page whitelist (migration 0061) ────────────────────────────────
+
+describe('navSectionsFor', () => {
+  it('treats an empty whitelist as "no override", not "no access"', () => {
+    // Every account predating the feature has zero rows — the fallback has
+    // to stay permissive or the whole app disappears on deploy.
+    expect(navSectionsFor('pm', [])).toEqual(navSectionsForRole('pm'));
+    expect(navSectionsFor('pm', null)).toEqual(navSectionsForRole('pm'));
+    expect(navSectionsFor('pm', undefined)).toEqual(navSectionsForRole('pm'));
+  });
+
+  it('keeps only the granted screens', () => {
+    const sections = navSectionsFor('pm', ['/dashboard', '/sotuvlar']);
+    const paths = sections.flatMap((s) => s.items.map((i) => i.path));
+    expect(paths).toEqual(['/dashboard', '/sotuvlar']);
+  });
+
+  it('drops a group once none of its screens are granted', () => {
+    const keys = navSectionsFor('pm', ['/dashboard']).map((s) => s.key);
+    expect(keys).toEqual(['dashboard']);
+  });
+
+  it('never widens past the role — granting a hidden path is a no-op', () => {
+    // store_manager has no access to /raw-warehouse; granting it changes
+    // nothing, because the role filter runs first.
+    const paths = navSectionsFor('store_manager', [
+      '/raw-warehouse',
+      '/stores',
+    ]).flatMap((s) => s.items.map((i) => i.path));
+    expect(paths).toEqual(['/stores']);
+  });
+});
+
+describe('isPathAllowed', () => {
+  it('allows everything when there is no override', () => {
+    expect(isPathAllowed('/products', 'pm', [])).toBe(true);
+  });
+
+  it('blocks a nav screen that was not granted', () => {
+    expect(isPathAllowed('/products', 'pm', ['/dashboard'])).toBe(false);
+  });
+
+  it('follows a nested route to its parent nav entry', () => {
+    // Detail routes are not nav items of their own — they inherit the
+    // grant of the screen they belong to.
+    expect(isPathAllowed('/replenishment/1001', 'pm', ['/dashboard'])).toBe(false);
+    expect(isPathAllowed('/replenishment/1001', 'pm', ['/replenishment'])).toBe(true);
+  });
+
+  it('lets non-nav utility routes through', () => {
+    // `/stock` has no nav entry; locking it out would strand the screen
+    // with no way to grant it.
+    expect(findGroupForPath('/stock')).toBeNull();
+    expect(isPathAllowed('/stock', 'pm', ['/dashboard'])).toBe(true);
+  });
+});
+
+describe('firstAllowedPath', () => {
+  it('lands on the first granted screen', () => {
+    expect(firstAllowedPath('pm', ['/products'])).toBe('/products');
+  });
+
+  it('prefers the earliest group in nav order', () => {
+    expect(firstAllowedPath('pm', ['/products', '/dashboard'])).toBe('/dashboard');
+  });
+
+  it('returns null when the whitelist grants nothing reachable', () => {
+    expect(firstAllowedPath('store_manager', ['/raw-warehouse'])).toBeNull();
+  });
+});
+
+describe('ALL_NAV_PATHS', () => {
+  it('covers every item in the nav model, without duplicates', () => {
+    const fromSections = NAV_SECTIONS.flatMap((s) => s.items.map((i) => i.path));
+    expect([...ALL_NAV_PATHS]).toEqual(fromSections);
+    expect(new Set(ALL_NAV_PATHS).size).toBe(ALL_NAV_PATHS.length);
   });
 });
