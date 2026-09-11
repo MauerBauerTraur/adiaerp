@@ -111,17 +111,25 @@ curl -skI https://adia.uz/ | grep -i last-modified          # timestamp is now?
 
 ## 4. Migrations — DO NOT run `npm run migrate`
 
-Production was migrated by hand for a stretch, so `schema_migrations` has gaps.
-The built-in runner applies **every** unapplied file, and two of them are
-destructive if replayed:
+Production was migrated by hand for a stretch, so `schema_migrations` had gaps.
+The built-in runner applies **every** unapplied file, and two of them rewrite
+data:
 
-| File | What it does | Why replaying it is destructive |
+| File | What it does | Why replaying it would be destructive |
 |---|---|---|
-| `0053_fix_sales_price_som.sql` | `UPDATE sales SET price = price / 100 WHERE price > 100` | Prices are already in so'm (median 16 000). It would turn 48 000 so'm into 480 — about 26 000 rows. |
+| `0053_fix_sales_price_som.sql` | `UPDATE sales SET price = price / 100 WHERE price > 100` | Prices are already in so'm. It would turn 48 000 so'm into 480 — about 26 000 rows. |
 | `0054_fix_cost_sell_price_som.sql` | divides `cost_price` / `sell_price` by 100 | `sell_price` is in a mixed state; ~100 products would be divided wrongly. |
 
-Also unapplied and *deliberately* left that way: `0052`, `0056`, `0057` — their
-schema changes were already made by hand, so the DB already matches them.
+**Update — 2026-09-11.** Those two, plus `0052`, `0056` and `0057`, are now
+**recorded** in `schema_migrations`, all five stamped `2026-09-10 17:53:53`.
+They were recorded, not executed: the data was checked afterwards and is
+intact — `sales` median **17 000 so'm over 39 508 rows**, `products.sell_price`
+median 340 000, zero rows under 100. A real run of `0053` would have left the
+median near 170. Five identical timestamps is the signature of rows inserted
+as "already applied" markers, which is what stops the runner replaying them.
+
+So the specific replay hazard is closed. The one-at-a-time discipline below
+still stands: it is what makes each change reviewable and reversible.
 
 **Apply exactly one migration at a time:**
 
@@ -130,8 +138,10 @@ python deploy/apply_migration.py 0061_your_migration.sql
 ```
 
 It runs that one file plus its `schema_migrations` row in a single
-transaction, refuses if it is already recorded, prints the schema before and
-after, and re-checks that `0053`/`0054` are still unapplied.
+transaction, refuses if it is already recorded, and prints the schema before
+and after. Its closing line still reports whether `0053`/`0054` are recorded —
+since 2026-09-10 they are, so that line now prints both filenames. Read it as
+"these are marked applied and will not replay", not as an alarm.
 
 Order matters: **apply the migration before deploying code that reads the new
 column.** `0060` added `production_orders.actual_qty`, which
@@ -150,6 +160,25 @@ npm test -w @adia/frontend
 Baseline as of 2026-09-10: **1 failed / 797 passed** in the backend suite. The
 one failure is `routes.sales.receipts.test.ts > store_manager sees only its own
 store` and predates the current work.
+
+**Frontend baseline, measured 2026-09-11 on `55d01c0`, Node 24.14.1:
+43 failed / 367 passed of 410 tests (39 of 169 files red).** Twice-run,
+identical both times. The suite is *not* green, so judge a frontend change the
+same way — by whether it adds failures. Recognisable clusters:
+
+| Count | Cluster |
+|---|---|
+| 8 | `RBAC matrix — PM …` expects a button to be absent for the PM role; it renders |
+| 4 | Uzbek apostrophe mismatch — code writes ASCII `'` (`Tovar ko'chirish`, `Maqsad bo'g'in`), tests expect U+2018 `‘` |
+| 3 | `ViewToggle` — no element with role `tab` |
+| 2 | `ProductionOrdersPage` — no button matching `Ya…` |
+
+The apostrophe cluster is a one-character fix; the RBAC cluster needs a
+decision on which side is right, the component or the test.
+
+The backend suite needs a local PostgreSQL on the URL in
+`apps/backend/.env` (`localhost:5434` on the dev machines). Without it the
+whole suite errors out — that is a missing database, not a regression.
 
 Judge a change by whether it *adds* failures, not by whether the suite is
 green. To get a clean baseline, stash your source changes (keep migrations) and
@@ -173,22 +202,38 @@ way — scope the check with `AND n.nspname = current_schema()`.
 
 ---
 
-## 7. Access gotcha — fail2ban
+## 7. Access gotcha — IP blocking under password auth
 
-The deploy scripts open a fresh SSH session per step. With **password** auth,
-repeated deploys trip fail2ban, which then drops *all* TCP from that IP —
-including 443, so you lose the site and SSH from that machine at once. The
-symptom is confusing: ICMP still answers (`ping` works) while `curl` and `ssh`
-time out.
+A machine deploying repeatedly with **password** auth has been cut off from the
+server entirely — including 443, so the site and SSH both vanish from that
+machine at once. The symptom is confusing: ICMP still answers (`ping` works)
+while `curl` and `ssh` time out.
 
-If that happens: deploy from another network, or ask someone with access to run
+**Correction — 2026-09-11.** This section used to name fail2ban as the cause
+and gave `fail2ban-client` commands to clear the ban. **fail2ban is not
+installed on this server** — `sudo fail2ban-client status sshd` returns
+`command not found`. So the blocking comes from somewhere else (upstream
+provider filtering or sshd's own throttling); the mechanism is not yet
+identified, and those two commands do nothing. Do not rely on them.
 
-```bash
-sudo fail2ban-client status sshd
-sudo fail2ban-client set sshd unbanip <YOUR_IP>
+**Use key auth and the problem does not arise.** A deploy key is set up:
+
+```
+deploy/.env.deploy → SSH_KEY=~/.ssh/adia_erp_deploy
 ```
 
-Use `SSH_KEY` rather than `PASSWORD` and this does not arise.
+To set one up on a new machine:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/adia_erp_deploy -N "" -C "adia-erp-deploy-$(whoami)"
+ssh-copy-id -i ~/.ssh/adia_erp_deploy.pub ubuntu@82.115.50.28   # asks for the password once
+ssh -i ~/.ssh/adia_erp_deploy -o PasswordAuthentication=no ubuntu@82.115.50.28 'echo ok'
+```
+
+Then point `SSH_KEY` at it. `deploy_code.py` and `apply_migration.py` both
+prefer the key and fall back to `PASSWORD` only when `SSH_KEY` is empty or the
+file is missing — so leaving a stale path in `SSH_KEY` makes them fail rather
+than quietly using the password.
 
 ---
 
@@ -201,3 +246,30 @@ Use `SSH_KEY` rather than `PASSWORD` and this does not arise.
   all onto three sections (`base`/`dough`/`other` → hamir, `decoration`/`cream`
   → krem, `assembly` → bezak) so nothing is dropped, but the underlying
   duplication is unresolved.
+
+Added 2026-09-11:
+
+- **Background workers cannot reach the database in bursts.** The error log
+  fills with `[action-expire] cycle failed: Connection terminated due to
+  connection timeout`, and the same for `[telegram-outbox]`, `[dialog-expire]`
+  and `[poster-sales-webhook]`. The HTTP path is healthy throughout, so this
+  looks like pool exhaustion or a pool timeout that only the cron cycles hit.
+  Unresolved — nobody has tuned the pool.
+- **Old frontend bundles are never cleaned.**
+  `apps/frontend/dist/assets/` holds 29 `index-*.js` files, one per deploy
+  going back months, because the deploy uploads over the directory instead of
+  replacing it. Harmless (nginx serves only what `index.html` names) but it
+  makes "which bundle is live?" a question you have to ask `index.html`.
+- **A deploy can be aborted by a root-owned file.** On 2026-09-11 the SFTP
+  upload died at `dist/lib/navPaths.*` with `EACCES` after 111 of 309 files —
+  those three had been written by a root-run build. `deploy_code.py` now
+  chowns both `dist` trees to `ubuntu:ubuntu` *before* uploading, so a repeat
+  is self-healing. If a deploy ever dies partway again, re-running it is safe:
+  the upload is idempotent and the restart only happens after both trees land.
+- **`/opt/adia-erp` is a git checkout** (currently at `70bf4fc`) with local
+  drift: `apps/backend/migrations/0050_poster_supplies.sql` shows as deleted,
+  `package-lock.json` as modified, and there is a stray
+  `apps/backend/.envngrep` plus old `dist.bak-*` directories. Deploys do not
+  use git — they SFTP the built `dist` — so this drift is inert, but it makes
+  `git status` on the server useless for telling what is deployed. Read
+  `dist/` timestamps instead.
