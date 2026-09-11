@@ -99,6 +99,14 @@ ls -lh /var/backups/adia/adia_erp_STAMP.sql.gz
 cp -a APPDIR/apps/backend/dist  APPDIR/apps/backend/dist.bak-STAMP
 cp -a APPDIR/apps/frontend/dist APPDIR/apps/frontend/dist.bak-STAMP
 echo "dist zaxiralandi: dist.bak-STAMP"
+
+# The SFTP upload runs as `ubuntu`, so a single root-owned leftover aborts it
+# with EACCES partway through, leaving half the bundle replaced. That happened
+# on 2026-09-11: dist/lib/navPaths.* had been written by a root-run build, and
+# the upload died on it after 111 files. Take ownership BEFORE uploading — the
+# restart phase already does it afterwards, which is too late to help.
+chown -R ubuntu:ubuntu APPDIR/apps/backend/dist APPDIR/apps/frontend/dist
+echo "egalik ubuntu:ubuntu ga o'tkazildi (yuklashdan oldin)"
 """.replace("APPDIR", APP_DIR).replace("STAMP", STAMP))
 if run('/tmp/adia_backup.sh') != 0:
     client.close(); sys.exit("ERROR: backup muvaffaqiyatsiz — deploy to'xtatildi.")
