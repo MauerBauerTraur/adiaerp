@@ -20,8 +20,19 @@
  */
 import { query, withTransaction } from '../../db/index.js';
 import { writeAudit } from '../../lib/audit.js';
-import { recordImportWarning } from '../../services/importWarnings.js';
+import { recordImportWarning, recordImportWarningOnce } from '../../services/importWarnings.js';
 import { PosterClient } from './client.js';
+import {
+  ProductNameIndex,
+  buildComponents,
+  fallbackOrderFor,
+  prepackYieldKg,
+  roundingWarning,
+  sameRecipeRows,
+  writePosterRecipe,
+  type BuiltComponent,
+  type RecipeComponentInput,
+} from './posterRecipe.js';
 import {
   STORAGE_TYPE_BY_ID,
   STORE_BACKING_STORAGE,
@@ -60,30 +71,6 @@ const UNIT_FROM_POSTER: Record<string, 'kg' | 'l' | 'pcs'> = {
 function normaliseUnit(raw: string | undefined): 'kg' | 'l' | 'pcs' {
   if (raw === undefined) return 'pcs';
   return UNIT_FROM_POSTER[raw.toLowerCase()] ?? 'pcs';
-}
-
-/**
- * Convert a Poster recipe quantity to a quantity in the component's unit:
- *   - structure_unit "g"  + ingredient_unit "kg" -> divide by 1000
- *   - structure_unit "ml" + ingredient_unit "l"  -> divide by 1000
- *   - same unit                                  -> as-is
- *
- * Anything else falls back to "as-is" — the import then writes a `recipes` row
- * the production-manager can correct in `PUT /api/products/:id/recipe`.
- */
-function normaliseQty(
-  structureUnit: string,
-  ingredientUnit: string,
-  raw: number | string,
-): number {
-  const n = typeof raw === 'number' ? raw : Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  const su = structureUnit.toLowerCase();
-  const iu = ingredientUnit.toLowerCase();
-  if (su === iu) return n;
-  if ((su === 'g' && iu === 'kg') || (su === 'ml' && iu === 'l')) return n / 1000;
-  if ((su === 'kg' && iu === 'g') || (su === 'l' && iu === 'ml')) return n * 1000;
-  return n;
 }
 
 // -----------------------------------------------------------------------------
@@ -378,79 +365,146 @@ async function upsertMenuProduct(
 }
 
 /**
- * Replace the BOM for `parentProductId` with `components`. The replace
- * happens in one transaction — partial BOMs are never visible.
+ * Replace the BOM for `parentProductId` with `components` (hourly/manual sync
+ * path). The replace happens in one transaction — partial BOMs are never
+ * visible — and skips products whose recipe is locked (`recipe_locked`).
  *
- * I9 (Sprint 3 audit): the inner per-row `try/catch` previously swallowed
- * the error message but LEFT the transaction in an aborted state. Once one
- * INSERT raised (e.g. 23505 / CHECK violation), every subsequent INSERT
- * inside the same tx failed with "current transaction is aborted, commands
- * ignored until end of transaction block" — so a single bad row sank the
- * whole recipe AND the per-prepack caller. The fix is a SAVEPOINT per row:
- * each row is its own sub-transaction; a failure rolls back ONLY that row
- * and the parent transaction continues. This is the only Postgres-correct
- * way to swallow a mid-tx error.
+ * The lock is read `FOR NO KEY UPDATE` inside the same transaction, so a manual
+ * recipe save that locks the product cannot slip in between the check and the
+ * DELETE and be overwritten by Poster.
+ *
+ * The write itself (per-row SAVEPOINTs — I9; stages kept only for an
+ * unchanged composition) lives in `writePosterRecipe`, shared with the explicit
+ * re-sync endpoint. A row the database rejects is skipped (logged) here — the
+ * hourly sync is best-effort; the explicit endpoint rejects the whole write.
+ *
+ * Review R6: the hourly sync NEVER silently flattens a real Hamir/Krem/Bezak
+ * split. When the new Poster composition would reset one, the recipe is left
+ * exactly as it is and a warning asks the owner to confirm the change on the
+ * "Poster bilan solishtirish" page (bulk apply with include_stage_resets).
  */
 async function replaceRecipe(
   parentProductId: number,
-  components: readonly { componentProductId: number; qtyPerUnit: number; brutto?: number }[],
-): Promise<number> {
-  if (components.length === 0) return 0;
-  // Skip products whose recipe has been manually locked by a PM/manager.
-  const { rows: lockRows } = await query<{ recipe_locked: boolean }>(
-    'SELECT recipe_locked FROM products WHERE id = $1',
-    [parentProductId],
-  );
-  if (lockRows[0]?.recipe_locked === true) {
-    console.log(`[poster] recipe sync skipped for product=${parentProductId} (recipe_locked)`);
-    return 0;
-  }
+  components: readonly RecipeComponentInput[],
+): Promise<RecipeSyncOutcome> {
+  if (components.length === 0) return NOT_WRITTEN;
   return withTransaction(async (tx) => {
-    await tx.query('DELETE FROM recipes WHERE product_id = $1', [parentProductId]);
-    let applied = 0;
-    for (const c of components) {
-      if (c.componentProductId === parentProductId) continue; // chk_recipe_no_self
-      if (c.qtyPerUnit <= 0) continue;
-      // SAVEPOINT name — sanitised, only alphanumerics + underscore. The
-      // identifier is server-side state, not user input, but we still avoid
-      // string templating into SQL anywhere unsafe.
-      const sp = `sp_recipe_${parentProductId}_${c.componentProductId}`;
-      try {
-        await tx.query(`SAVEPOINT ${sp}`);
-        const brutto = (c.brutto !== undefined && c.brutto > 0) ? c.brutto : (c.qtyPerUnit);
-        await tx.query(
-          `INSERT INTO recipes (product_id, component_product_id, qty_per_unit, brutto)
-           VALUES ($1, $2, $3, $4)
-           ON CONFLICT (product_id, component_product_id, stage) DO UPDATE
-             SET qty_per_unit = EXCLUDED.qty_per_unit,
-                 brutto = EXCLUDED.brutto`,
-          [parentProductId, c.componentProductId, c.qtyPerUnit, brutto],
-        );
-        await tx.query(`RELEASE SAVEPOINT ${sp}`);
-        applied += 1;
-      } catch (err) {
-        // Roll back ONLY this row — the outer tx is still healthy.
-        try {
-          await tx.query(`ROLLBACK TO SAVEPOINT ${sp}`);
-          await tx.query(`RELEASE SAVEPOINT ${sp}`);
-        } catch {
-          // savepoint already released — ignore
-        }
-        const e = err as { message?: string; code?: string };
-        console.error(
-          `[poster] recipe row skipped product=${parentProductId} component=${c.componentProductId} code=${e.code ?? '-'} msg=${redactUrl(e.message ?? '')}`,
-        );
-      }
+    const { rows: lockRows } = await tx.query<{ recipe_locked: boolean }>(
+      'SELECT recipe_locked FROM products WHERE id = $1 FOR NO KEY UPDATE',
+      [parentProductId],
+    );
+    if (lockRows[0] === undefined) return NOT_WRITTEN;
+    if (lockRows[0].recipe_locked) {
+      // Skip products whose recipe has been manually locked by a PM/manager.
+      console.log(`[poster] recipe sync skipped for product=${parentProductId} (recipe_locked)`);
+      return NOT_WRITTEN;
     }
+    const result = await writePosterRecipe(tx, parentProductId, components, { refuseStageReset: true });
+    if (result.refused) {
+      console.log(`[poster] recipe sync skipped for product=${parentProductId} (would flatten a stage split)`);
+      return { ...NOT_WRITTEN, stageSplitBlocked: true };
+    }
+    // The previous rows go into the audit whenever the recipe actually changed,
+    // so any hourly rewrite can be reconstructed; an identical hourly rewrite
+    // keeps the row small.
+    const changed = !sameRecipeRows(result.previous, result.written);
     await writeAudit(tx, {
       actorUserId: null,
       action: 'poster.recipe.import',
       entity: 'recipes',
       entityId: parentProductId,
-      payload: { components: applied },
+      payload: {
+        components: result.applied,
+        ...(changed ? { previous_components: result.previous } : {}),
+      },
     });
-    return applied;
+    return { applied: result.applied, stageSplitBlocked: false, roundingChanges: result.roundingChanges };
   });
+}
+
+type RecipeSyncOutcome = {
+  readonly applied: number;
+  /** Skipped: the new composition would have flattened a real stage split. */
+  readonly stageSplitBlocked: boolean;
+  readonly roundingChanges: readonly { componentProductId: number; from: number; to: number }[];
+};
+
+const NOT_WRITTEN: RecipeSyncOutcome = { applied: 0, stageSplitBlocked: false, roundingChanges: [] };
+
+/** Import warning when the hourly sync refuses to flatten a stage split (R6). */
+const STAGE_SPLIT_BLOCKED_WARNING =
+  "Poster tarkibi o'zgardi, lekin retseptda Hamir/Krem/Bezak bo'linishi bor — 'Poster bilan solishtirish' sahifasida tasdiqlang";
+
+/**
+ * Per-run bookkeeping of what the recipe sync must tell the PM, written to
+ * `import_warnings` (source 'poster.recipe'). Best-effort: a failure here
+ * never aborts the sync.
+ *
+ *   - binding notes (bound by id despite a different name / bound by name
+ *     only) — ONE row per COMPONENT, not per recipe x component, so a
+ *     systematic naming difference yields one row per product, not hundreds;
+ *   - a recipe NOT synced because it would have flattened a Hamir/Krem/Bezak
+ *     split (R6) — one row per parent product;
+ *   - a value the 4-decimal storage changes by more than 10% — one row per
+ *     parent product and component;
+ *   - merged duplicate Poster lines — a server log line only.
+ *
+ * `recordImportWarningOnce` skips a row whose unresolved twin already exists
+ * (across runs); the in-memory set saves the round-trips within one run.
+ */
+class RecipeSyncWarnings {
+  private readonly seen = new Set<string>();
+
+  async afterWrite(
+    parentProductId: number,
+    built: { readonly components: readonly BuiltComponent[]; readonly duplicates: readonly { componentProductId: number; lines: number }[] },
+    outcome: RecipeSyncOutcome,
+  ): Promise<void> {
+    if (outcome.stageSplitBlocked) {
+      await this.record(`product:${parentProductId}`, STAGE_SPLIT_BLOCKED_WARNING, {
+        parent_product_id: parentProductId,
+      });
+      return;
+    }
+    if (outcome.applied === 0) return;
+    for (const d of built.duplicates) {
+      console.log(
+        `[poster:recipe] product=${parentProductId} component=${d.componentProductId} merged ${d.lines} Poster lines (quantities summed)`,
+      );
+    }
+    for (const c of built.components) {
+      for (const note of c.notes) {
+        await this.record(`product:${c.componentProductId}`, note, {
+          component_product_id: c.componentProductId,
+          poster_ingredient_id: c.posterIngredientId,
+          poster_name: c.posterName,
+          erp_name: c.name,
+          matched_by: c.matchedBy,
+          first_seen_in_product_id: parentProductId,
+        });
+      }
+    }
+    for (const r of outcome.roundingChanges) {
+      const name = built.components.find((c) => c.componentProductId === r.componentProductId)?.name ?? `#${r.componentProductId}`;
+      await this.record(`product:${parentProductId}`, roundingWarning(name, r.from, r.to), {
+        parent_product_id: parentProductId,
+        component_product_id: r.componentProductId,
+        from: r.from,
+        to: r.to,
+      });
+    }
+  }
+
+  private async record(entity: string, message: string, payload: Record<string, unknown>): Promise<void> {
+    const key = `${entity}|${message}`;
+    if (this.seen.has(key)) return;
+    this.seen.add(key);
+    try {
+      await recordImportWarningOnce({ source: 'poster.recipe', entity, severity: 'warning', message, payload });
+    } catch (err) {
+      console.error('[poster:recipe] failed to record import_warning:', (err as Error).message);
+    }
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -657,6 +711,9 @@ export async function syncMenuProducts(
       }
     }
     // Phase 2: BOM import + sell_price for type=2 products.
+    // One name index + one warning log per run.
+    const nameIndex = new ProductNameIndex();
+    const warnings = new RecipeSyncWarnings();
     for (const p of list) {
       if (p.type !== '2') continue;
       const ppid = Number(p.product_id);
@@ -678,8 +735,14 @@ export async function syncMenuProducts(
         }
       }
       if (!Array.isArray(full.ingredients) || full.ingredients.length === 0) continue;
-      const components = await resolveBomComponents(full.ingredients);
-      await replaceRecipe(parentId, components);
+      // A menu product's Poster lines are per unit sold -> yield divisor 1.
+      // Menu tech cards keep the historical ingredient-first id fallback.
+      const built = await buildComponents(full.ingredients, 1, {
+        order: fallbackOrderFor('menu'),
+        parentProductId: parentId,
+        nameIndex,
+      });
+      await warnings.afterWrite(parentId, built, await replaceRecipe(parentId, built.components));
     }
     await finishSyncRun(runId, 'ok', { recordsIn: total, recordsApplied: applied });
     return { entity: 'products', status: 'ok', recordsIn: total, recordsApplied: applied };
@@ -731,6 +794,9 @@ export async function syncPrepacks(
   try {
     const list = await client.getPrepacks();
     total = list.length;
+    // One name index + one warning log per run.
+    const nameIndex = new ProductNameIndex();
+    const warnings = new RecipeSyncWarnings();
     for (const p of list) {
       const ppid = Number(p.product_id);
       if (!Number.isInteger(ppid) || ppid <= 0) continue;
@@ -739,12 +805,8 @@ export async function syncPrepacks(
       const pingRaw = Number(p.ingredient_id);
       const ping: number | null = Number.isInteger(pingRaw) && pingRaw > 0 ? pingRaw : null;
       try {
-        const out = Number(p.out);
-        // Poster stores `p.out` (batch yield) in grams for all weight-based
-        // prepacks. All ADIA prepacks are normalised to 'kg', so divide by 1000.
-        // Fall back to 1 kg when out is zero/missing (e.g. piece-based items
-        // where Poster returns out=0).
-        const batchYieldKg = Number.isFinite(out) && out > 0 ? out / 1000 : 1;
+        // `out` (batch yield) is grams in Poster, kg in the ERP (see prepackYieldKg).
+        const batchYieldKg = prepackYieldKg(p.out);
         // Resolve workshop → production_location_id.
         const workshopId = Number(p.workshop_id);
         const workshopLocs = Number.isInteger(workshopId) && workshopId > 0 ? wmap.get(workshopId) : undefined;
@@ -756,61 +818,21 @@ export async function syncPrepacks(
           workshopLocs?.productionLocationId ?? null,
           workshopLocs?.storageLocationId ?? null,
         );
-        // qty_per_unit = ingredient_qty_in_ADIA_unit / batch_yield_in_kg
-        // batchYieldKg is always in kg (prepack ADIA unit). Each ingredient's
-        // qty is converted from its recipe unit (structure_unit, e.g. "g") to
-        // its ADIA stored unit (ingredient_unit, e.g. "kg") via normaliseQty.
-        const components: { componentProductId: number; qtyPerUnit: number; brutto: number }[] = [];
-        for (const ing of p.ingredients ?? []) {
-          const compPing = Number(ing.ingredient_id);
-          if (!Number.isInteger(compPing) || compPing <= 0) continue;
-          // structure_type=2 means the component is another prepack; in Poster's
-          // API, ingredient_id for prepack components stores the prepack's
-          // product_id (not its ingredient_id). Try poster_product_id first for
-          // these, then fall back to poster_ingredient_id.
-          const isPrepackComponent = String(ing.structure_type) === '2';
-          const firstQ = isPrepackComponent
-            ? `SELECT id FROM products WHERE poster_product_id = $1`
-            : `SELECT id FROM products WHERE poster_ingredient_id = $1`;
-          const secondQ = isPrepackComponent
-            ? `SELECT id FROM products WHERE poster_ingredient_id = $1`
-            : `SELECT id FROM products WHERE poster_product_id = $1`;
-          const compRow = await query<{ id: number }>(firstQ, [compPing]);
-          let compId = compRow.rows[0]?.id;
-          if (compId === undefined) {
-            const compRow2 = await query<{ id: number }>(secondQ, [compPing]);
-            compId = compRow2.rows[0]?.id;
-          }
-          if (compId === undefined) continue; // ingredient not yet seeded — skip
-          const strUnit = String(ing.structure_unit ?? '');
-          const ingUnit = String(ing.ingredient_unit ?? '');
-          const bruttoConverted = normaliseQty(strUnit, ingUnit, ing.structure_brutto);
-          const nettoConverted = normaliseQty(strUnit, ingUnit, ing.structure_netto ?? ing.structure_brutto);
-          // For piece-counted ingredients (unit "p"), Poster stores structure_netto
-          // in grams (not pieces), so netto is in a different unit than brutto.
-          // Always use brutto for these to avoid treating gram-netto as piece count.
-          // Consumption qty tracks BRUTTO — the gross amount actually taken from
-          // stock, which is exactly what Poster charges to себестоимость. We do
-          // NOT prefer `structure_netto`: in this Poster account netto is
-          // unreliable — sometimes it is the batch yield (e.g. 1000 g, which
-          // inflated qty_per_unit to 1.0 and blew cost up ~10000x: мясо курицы),
-          // and sometimes a rounded net weight below brutto (which under-counted
-          // vs Poster: тесто сслойка used 1.0 instead of brutto 1.453). Brutto is
-          // both the physically-consumed quantity and the one Poster costs from,
-          // so it is the single source of truth. Netto is only a fallback when
-          // brutto is missing/zero. `structure_unit` "g" → ADIA "kg" is already
-          // applied by normaliseQty above.
-          const qtyConverted = bruttoConverted > 0 ? bruttoConverted : nettoConverted;
-          // Use the prepack's batch yield (already in kg) as the divisor so
-          // qty_per_unit = "ingredient_ADIA_unit per 1 kg of finished prepack".
-          const safeYield = batchYieldKg > 0 ? batchYieldKg : 1;
-          const perUnit = qtyConverted / safeYield;
-          const bruttoPerUnit = bruttoConverted / safeYield;
-          if (perUnit > 0 && Number.isFinite(perUnit)) {
-            components.push({ componentProductId: compId, qtyPerUnit: perUnit, brutto: bruttoPerUnit > 0 ? bruttoPerUnit : perUnit });
-          }
-        }
-        await replaceRecipe(parentId, components);
+        // qty_per_unit = component qty (ERP unit) per 1 kg of finished prepack,
+        // BRUTTO-based. Consumption tracks the gross amount taken from stock,
+        // which is what Poster charges to себестоимость; netto is unreliable in
+        // this account (sometimes the batch yield — 1000 g inflated qty to 1.0
+        // and blew cost up ~10000x: мясо курицы; sometimes a rounded net weight
+        // below brutto: тесто сслойка 1.0 instead of 1.453). Netto is only a
+        // fallback when brutto is missing/zero. See `buildComponents`.
+        // Components not yet seeded in the ERP are skipped (next run picks
+        // them up); unusual bindings are flagged (RecipeSyncWarnings).
+        const built = await buildComponents(p.ingredients ?? [], batchYieldKg, {
+          order: fallbackOrderFor('prepack'),
+          parentProductId: parentId,
+          nameIndex,
+        });
+        await warnings.afterWrite(parentId, built, await replaceRecipe(parentId, built.components));
         applied += 1;
       } catch (err) {
         // Per-prepack isolation: log the real Postgres code + message, push
@@ -871,57 +893,6 @@ export async function syncPrepacks(
       errorDetail: detail,
     };
   }
-}
-
-/**
- * Resolve a Poster `ingredients` array to ADIA component product ids +
- * normalised qty. Components that are not yet seeded are silently skipped —
- * the next seed run picks them up.
- */
-async function resolveBomComponents(
-  rows: readonly {
-    ingredient_id: string;
-    structure_unit: string;
-    ingredient_unit: string;
-    structure_brutto: number | string;
-    structure_netto?: number | string;
-  }[],
-): Promise<{ componentProductId: number; qtyPerUnit: number; brutto: number }[]> {
-  const out: { componentProductId: number; qtyPerUnit: number; brutto: number }[] = [];
-  for (const ing of rows) {
-    const ping = Number(ing.ingredient_id);
-    if (!Number.isInteger(ping) || ping <= 0) continue;
-    const r = await query<{ id: number }>(
-      `SELECT id FROM products WHERE poster_ingredient_id = $1`,
-      [ping],
-    );
-    let id = r.rows[0]?.id;
-    if (id === undefined) {
-      // Fallback: some prepacks have ingredient_id=0 in Poster, so BOMs reference
-      // them by product_id. Try poster_product_id when ingredient lookup misses.
-      const r2 = await query<{ id: number }>(
-        `SELECT id FROM products WHERE poster_product_id = $1`,
-        [ping],
-      );
-      id = r2.rows[0]?.id;
-    }
-    if (id === undefined) continue;
-    const ingUnit = String(ing.ingredient_unit ?? '');
-    const brutto = normaliseQty(
-      String(ing.structure_unit ?? ''),
-      ingUnit,
-      ing.structure_brutto,
-    );
-    const netto = ing.structure_netto !== undefined
-      ? normaliseQty(String(ing.structure_unit ?? ''), ingUnit, ing.structure_netto)
-      : brutto;
-    // Use BRUTTO — the gross consumption Poster costs from (see syncPrepacks).
-    // Netto is unreliable in this account (yield-in-netto, or a rounded net
-    // weight below brutto) so it is only a fallback when brutto is missing.
-    const qty = brutto > 0 ? brutto : netto;
-    if (qty > 0) out.push({ componentProductId: id, qtyPerUnit: qty, brutto });
-  }
-  return out;
 }
 
 /**

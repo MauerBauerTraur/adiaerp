@@ -28,15 +28,13 @@
  *
  * `readBaseBom` returns the `base` lines a zagatovka sub-order consumes.
  */
-import type { TxClient } from '../db/index.js';
+import type { Runner, TxClient } from '../db/index.js';
+import { AppError } from '../errors/index.js';
 
 export type BomLine = {
   readonly component_product_id: number;
   readonly qty_per_unit: number;
 };
-
-/** A queryable client — the pool runner or an open transaction. */
-type Runner = Pick<TxClient, 'query'>;
 
 /**
  * The BOM lines a FINAL (finished) production order consumes. When the recipe
@@ -109,4 +107,88 @@ function normalize(line: BomLine): BomLine {
     component_product_id: Number(line.component_product_id),
     qty_per_unit: Number(line.qty_per_unit),
   };
+}
+
+/**
+ * One recipe line as the API returns it (GET /api/products/:id/recipe and
+ * POST /api/integrations/poster/product-recipe/:id/apply share this shape).
+ */
+export type RecipeApiRow = {
+  id: number;
+  product_id: number;
+  component_product_id: number;
+  qty_per_unit: number;
+  brutto: number;
+  stage: string | null;
+  component_name: string;
+  component_unit: string;
+  component_cost_price: number | null;
+  component_type: string;
+};
+
+/** Read a product's recipe lines joined with their component product. */
+export async function readRecipeRows(
+  runner: Runner,
+  productId: number,
+): Promise<RecipeApiRow[]> {
+  const { rows } = await runner.query<RecipeApiRow>(
+    `SELECT r.id, r.product_id, r.component_product_id, r.qty_per_unit, r.brutto,
+            r.stage, p.name AS component_name, p.unit AS component_unit,
+            p.cost_price AS component_cost_price, p.type AS component_type
+       FROM recipes r
+       JOIN products p ON p.id = r.component_product_id
+      WHERE r.product_id = $1 ORDER BY r.id`,
+    [productId],
+  );
+  return rows.map((r) => ({
+    ...r,
+    qty_per_unit: Number(r.qty_per_unit),
+    brutto: Number(r.brutto),
+    stage: r.stage ?? null,
+  }));
+}
+
+/**
+ * Reject a deep BOM cycle (AC2.2). Given the proposed direct components of
+ * `productId`, walk the existing recipe graph from each component: if any
+ * path reaches `productId`, adding it would close a cycle.
+ *
+ * Takes a `TxClient` on purpose: the check must run in the SAME transaction
+ * as the recipe DELETE/INSERTs so it sees exactly the graph being committed.
+ * Callers also lock the parent product row (`SELECT ... FOR UPDATE`), which
+ * serialises concurrent writers of the SAME product. Two concurrent writes to
+ * two DIFFERENT products that only together close a cycle are not prevented
+ * at READ COMMITTED — that would need SERIALIZABLE or a global lock.
+ */
+export async function assertNoBomCycle(
+  client: TxClient,
+  productId: number,
+  componentIds: readonly number[],
+): Promise<void> {
+  // Components and the product itself are the starting forbidden set.
+  for (const componentId of componentIds) {
+    if (componentId === productId) {
+      throw AppError.validation('A product cannot be a component of itself.');
+    }
+  }
+  // BFS over the existing recipe graph from each proposed component.
+  const visited = new Set<number>();
+  const queue: number[] = [...componentIds];
+  while (queue.length > 0) {
+    const current = queue.shift() as number;
+    if (current === productId) {
+      throw AppError.validation('This BOM would create a cycle in the recipe graph.');
+    }
+    if (visited.has(current)) {
+      continue;
+    }
+    visited.add(current);
+    const { rows } = await client.query<{ component_product_id: number }>(
+      'SELECT component_product_id FROM recipes WHERE product_id = $1',
+      [current],
+    );
+    for (const row of rows) {
+      queue.push(Number(row.component_product_id));
+    }
+  }
 }

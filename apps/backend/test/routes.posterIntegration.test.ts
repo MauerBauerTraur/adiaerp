@@ -15,6 +15,7 @@ import {
   PosterClient,
   setPosterClientForTests,
 } from '../src/integrations/poster/client.js';
+import { acquirePosterRecipeLock } from '../src/integrations/poster/recipeLock.js';
 
 let ctx: TestContext;
 
@@ -186,9 +187,50 @@ describe('POST /api/integrations/poster/sync (pm)', () => {
     expect(rows[0]?.poster_spot_id).toBe(1);
     expect(rows[0]?.poster_storage_id).toBe(3);
   });
+  it('R5: products / all syncs take the shared recipe lock (409 while it is held); locations do not', async () => {
+    setPosterClientForTests(
+      new PosterClient({
+        token: 'acc:test',
+        minIntervalMs: 0,
+        fetcher: ((url: string | URL) => {
+          const u = typeof url === 'string' ? new URL(url) : url;
+          const m = u.pathname.split('/').pop();
+          const body = m === 'access.getSpots' || m === 'storage.getStorages'
+            ? { response: [] }
+            : { error: { code: 30, message: 'NA' } };
+          return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+        }) as unknown as typeof fetch,
+      }),
+    );
+    process.env.POSTER_TOKEN = 'acc:test';
+    const { resetConfigCache } = await import('../src/config/index.js');
+    resetConfigCache();
+    const pm = await makeUser(ctx.db, { role: 'pm', locationId: null });
+
+    const held = await acquirePosterRecipeLock();
+    expect(held).not.toBeNull();
+    try {
+      for (const entity of ['products', 'all']) {
+        const res = await request(ctx.app)
+          .post(`/api/integrations/poster/sync?entity=${entity}`)
+          .set('Authorization', `Bearer ${pm.token}`)
+          .send({});
+        expect(res.status).toBe(409);
+        expect(res.body.error.message).toBe("Poster sinxronlash ishlayapti — birozdan keyin qayta urinib ko'ring.");
+      }
+      const loc = await request(ctx.app)
+        .post('/api/integrations/poster/sync?entity=locations')
+        .set('Authorization', `Bearer ${pm.token}`)
+        .send({});
+      expect(loc.status).toBe(200);
+    } finally {
+      await held!.release();
+    }
+  });
 });
 
 describe('GET /api/integrations/poster/status (pm)', () => {
+
   it('refuses non-pm', async () => {
     const store = await ctx.db.query<{ id: number }>(
       `INSERT INTO locations (name, type) VALUES ('S','store') RETURNING id`,

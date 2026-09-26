@@ -44,6 +44,9 @@ export type TxClient = {
   ): Promise<{ rows: T[]; rowCount: number }>;
 };
 
+/** A queryable client — the pool runner or an open transaction. */
+export type Runner = Pick<TxClient, 'query'>;
+
 /**
  * Execute `work` inside a single atomic transaction.
  *

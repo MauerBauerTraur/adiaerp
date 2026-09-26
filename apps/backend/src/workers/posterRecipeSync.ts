@@ -3,7 +3,9 @@
  *
  * Schedule: every hour. Keeps product recipes (BOM) in ERP consistent with
  * Poster. Products with recipe_locked = TRUE are skipped (replaceRecipe
- * handles the guard internally).
+ * handles the guard internally). The cycle takes the shared recipe advisory
+ * lock (integrations/poster/recipeLock.ts) and skips itself while the bulk
+ * recipe audit/apply/restore job holds it.
  *
  * The worker NEVER throws — Poster outages are logged and the next tick retries.
  */
@@ -12,6 +14,7 @@ import { loadConfig } from '../config/index.js';
 import { createPosterClientFromConfig } from '../integrations/poster/client.js';
 import { syncIngredients, syncPrepacks, syncMenuProducts } from '../integrations/poster/seedSync.js';
 import { syncModifications } from '../integrations/poster/modificationSync.js';
+import { acquirePosterRecipeLock, type HeldPosterRecipeLock } from '../integrations/poster/recipeLock.js';
 
 export const POSTER_RECIPE_SYNC_SCHEDULE = '0 * * * *'; // every hour at :00
 
@@ -42,13 +45,23 @@ export async function runRecipeSyncCycle(): Promise<void> {
   const cfg = loadConfig();
   if (cfg.poster.token === '') return; // Poster not configured
   cronGuard.running = true;
+  let held: HeldPosterRecipeLock | null = null;
   try {
+    // Shared with the bulk recipe audit/apply/restore job: never rewrite
+    // recipes while that job is comparing, applying or restoring them.
+    held = await acquirePosterRecipeLock();
+    if (held === null) {
+      console.log('[poster-recipe-sync] bulk recipe job holds the recipe lock, skipping this cycle');
+      return;
+    }
     const client = createPosterClientFromConfig();
-    const [ingr, prepacks, menu] = await Promise.all([
-      syncIngredients(client, 'poll'),
-      syncPrepacks(client, 'poll'),
-      syncMenuProducts(client, 'poll'),
-    ]);
+    // Sequential on purpose: prepacks resolve components the ingredient pass
+    // creates/renames, and menu products resolve prepacks the prepack pass
+    // creates/renames. Run in parallel they raced and could bind stale rows
+    // (the Poster client serialises calls anyway, so parallelism bought nothing).
+    const ingr = await syncIngredients(client, 'poll');
+    const prepacks = await syncPrepacks(client, 'poll');
+    const menu = await syncMenuProducts(client, 'poll');
     const applied = (ingr.recordsApplied ?? 0) + (prepacks.recordsApplied ?? 0) + (menu.recordsApplied ?? 0);
     if (applied > 0) {
       console.log(`[poster-recipe-sync] updated=${applied}`);
@@ -64,6 +77,7 @@ export async function runRecipeSyncCycle(): Promise<void> {
   } catch (err) {
     console.error('[poster-recipe-sync] cycle failed:', (err as Error).message);
   } finally {
+    if (held !== null) await held.release();
     cronGuard.running = false;
   }
 }

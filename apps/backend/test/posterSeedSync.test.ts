@@ -7,9 +7,11 @@
  *
  * Idempotency is verified by running the sync twice in the same test.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTestContext, type TestContext } from './helpers/context.js';
 import { PosterClient } from '../src/integrations/poster/client.js';
+import { withTransaction } from '../src/db/index.js';
+import { readFinalBom } from '../src/services/bom.js';
 import {
   syncSpots,
   syncStorages,
@@ -624,5 +626,310 @@ describe('Poster seedSync — menu products + BOM import', () => {
     expect(recipes).toHaveLength(1);
     // 200 g of cocoa converted to kg -> 0.2 kg per unit.
     expect(recipes[0]?.qty_per_unit).toBeCloseTo(0.2, 6);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Component resolution (id-space collisions), stage preservation, warnings.
+// -----------------------------------------------------------------------------
+
+async function mkProduct(
+  name: string,
+  opts: { type?: string; unit?: string; ppid?: number | null; ping?: number | null; locked?: boolean } = {},
+): Promise<number> {
+  const { rows } = await ctx.db.query<{ id: string }>(
+    `INSERT INTO products (name, type, unit, poster_product_id, poster_ingredient_id, recipe_locked)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    [name, opts.type ?? 'semi', opts.unit ?? 'kg', opts.ppid ?? null, opts.ping ?? null, opts.locked ?? false],
+  );
+  return Number(rows[0]!.id);
+}
+
+async function recipeOf(posterProductId: number) {
+  const { rows } = await ctx.db.query<{ component_product_id: string; qty_per_unit: string; stage: string }>(
+    `SELECT r.component_product_id, r.qty_per_unit::text AS qty_per_unit, r.stage::text AS stage
+       FROM recipes r JOIN products p ON p.id = r.product_id
+      WHERE p.poster_product_id = $1 ORDER BY r.id`,
+    [posterProductId],
+  );
+  return rows.map((r) => ({ component: Number(r.component_product_id), qty: Number(r.qty_per_unit), stage: r.stage }));
+}
+
+const MEDOVIK_PREPACK = {
+  product_id: '978',
+  ingredient_id: '2402',
+  product_name: 'Г/П МЕДОВИК ШОК ЧЕРНЫЙ',
+  out: 1000,
+  ingredients: [
+    {
+      structure_id: '1', ingredient_id: '1101', structure_unit: 'g', structure_type: '2',
+      structure_brutto: 115.3, structure_netto: 0,
+      ingredient_name: 'медовик шок черный тесто', ingredient_unit: 'kg',
+    },
+    {
+      structure_id: '2', ingredient_id: '1102', structure_unit: 'g', structure_type: '2',
+      structure_brutto: 63.88, structure_netto: 1000,
+      ingredient_name: 'медовик шок крем', ingredient_unit: 'kg',
+    },
+  ],
+};
+
+describe('Poster seedSync — component resolution + stages', () => {
+  it('syncPrepacks binds the right product on an id collision (type-2 component)', async () => {
+    // 1102: product_id row is the real крем, ingredient_id row is unrelated.
+    const p1 = await mkProduct('медовик шок крем', { ppid: 1102 });
+    await mkProduct('медовик сметанный крем', { ping: 1102 });
+    // 1101: the product_id row carries a DIFFERENT name, the ingredient_id row
+    // matches Poster's name — the name check must win over the id priority.
+    await mkProduct('бисквит ванильный', { ppid: 1101 });
+    const testo = await mkProduct('медовик шок черный тесто', { ping: 1101 });
+
+    const r = await syncPrepacks(clientForResponses({ 'menu.getPrepacks': [MEDOVIK_PREPACK] }));
+    expect(r.status).toBe('ok');
+    const recipe = await recipeOf(978);
+    expect(recipe.map((l) => l.component).sort()).toEqual([p1, testo].sort());
+    // Brutto-based: крем 63.88 g / 1 kg batch (never the 1000 g netto).
+    expect(recipe.find((l) => l.component === p1)?.qty).toBeCloseTo(0.0639, 4);
+  });
+
+  it('syncMenuProducts: type-1 component takes the id-space row that matches by name (mirror case)', async () => {
+    await mkProduct('сахар', { type: 'raw', ping: 55 });
+    const cocoa = await mkProduct('какао порошок', { type: 'raw', ppid: 55 });
+    // A type-2 component on a MENU product: the NAME decides between the id
+    // spaces (the fallback order only matters when neither name matches).
+    const krem = await mkProduct('медовик шок крем', { ppid: 1102 });
+    await mkProduct('медовик сметанный крем', { ping: 1102 });
+
+    const client = clientForResponses({
+      'menu.getProducts': [{ product_id: '800', product_name: 'Cake', type: '2', ingredient_id: '1500' }],
+      'menu.getProduct': {
+        product_id: '800', product_name: 'Cake', type: '2', ingredient_id: '1500',
+        ingredients: [
+          {
+            structure_id: 's1', ingredient_id: '55', structure_unit: 'g', structure_type: '1',
+            structure_brutto: 200, structure_netto: 200, ingredient_name: 'Какао порошок', ingredient_unit: 'kg',
+          },
+          {
+            structure_id: 's2', ingredient_id: '1102', structure_unit: 'g', structure_type: '2',
+            structure_brutto: 300, structure_netto: 1000, ingredient_name: 'медовик шок крем', ingredient_unit: 'kg',
+          },
+        ],
+      },
+    });
+    const r = await syncMenuProducts(client);
+    expect(r.status).toBe('ok');
+    const recipe = await recipeOf(800);
+    expect(recipe.map((l) => l.component).sort()).toEqual([cocoa, krem].sort());
+    expect(recipe.find((l) => l.component === krem)?.qty).toBeCloseTo(0.3, 4);
+  });
+
+  it('E1 regression: menu type-2 line, names match neither id space -> OLD ingredient-first binding', async () => {
+    await mkProduct('AAA product-space row', { ppid: 1102 });
+    const byPing = await mkProduct('BBB ingredient-space row', { ping: 1102 });
+    const client = clientForResponses({
+      'menu.getProducts': [{ product_id: '800', product_name: 'Cake', type: '2', ingredient_id: '1500' }],
+      'menu.getProduct': {
+        product_id: '800', product_name: 'Cake', type: '2', ingredient_id: '1500',
+        ingredients: [{
+          structure_id: 's', ingredient_id: '1102', structure_unit: 'g', structure_type: '2',
+          structure_brutto: 300, structure_netto: 300, ingredient_name: 'zzz poster name', ingredient_unit: 'kg',
+        }],
+      },
+    });
+    await syncMenuProducts(client);
+    expect((await recipeOf(800)).map((l) => l.component)).toEqual([byPing]);
+  });
+
+  it('the hourly sync keeps ERP-set stages when the composition is unchanged', async () => {
+    const parent = await mkProduct('Г/П МЕДОВИК ШОК ЧЕРНЫЙ', { ppid: 978, ping: 2402 });
+    const testo = await mkProduct('медовик шок черный тесто', { ppid: 1101 });
+    const krem = await mkProduct('медовик шок крем', { ppid: 1102 });
+    await ctx.db.query(
+      `INSERT INTO recipes (product_id, component_product_id, qty_per_unit, brutto, stage)
+       VALUES ($1, $2, 0.2, 0.2, 'base'), ($1, $3, 0.5, 0.5, 'decoration')`,
+      [parent, testo, krem],
+    );
+
+    await syncPrepacks(clientForResponses({ 'menu.getPrepacks': [MEDOVIK_PREPACK] }));
+    const recipe = await recipeOf(978);
+    expect(recipe.find((l) => l.component === krem)?.stage).toBe('decoration');
+    expect(recipe.find((l) => l.component === testo)?.stage).toBe('base');
+    const finalBom = await withTransaction((tx) => readFinalBom(tx, parent));
+    expect(finalBom.map((l) => l.component_product_id)).toEqual([krem]);
+    expect(finalBom[0]!.qty_per_unit).toBeCloseTo(0.0639, 4);
+  });
+
+  it('Y1: the hourly sync keeps a component split across stages, distributing the new total', async () => {
+    const parent = await mkProduct('Г/П МЕДОВИК ШОК ЧЕРНЫЙ', { ppid: 978, ping: 2402 });
+    const testo = await mkProduct('медовик шок черный тесто', { ppid: 1101 });
+    const krem = await mkProduct('медовик шок крем', { ppid: 1102 });
+    // крем split 1:3 between base and decoration; Poster's total is 0.06388.
+    await ctx.db.query(
+      `INSERT INTO recipes (product_id, component_product_id, qty_per_unit, brutto, stage) VALUES
+        ($1, $2, 0.2, 0.2, 'base'), ($1, $3, 0.1, 0.1, 'base'), ($1, $3, 0.3, 0.3, 'decoration')`,
+      [parent, testo, krem],
+    );
+    await syncPrepacks(clientForResponses({ 'menu.getPrepacks': [MEDOVIK_PREPACK] }));
+    const rows = (await recipeOf(978)).filter((l) => l.component === krem).sort((a, b) => a.stage.localeCompare(b.stage));
+    expect(rows.map((l) => l.stage)).toEqual(['base', 'decoration']);
+    expect(rows[0]!.qty).toBeCloseTo(0.016, 4); // 0.06388 / 4
+    expect(rows[1]!.qty).toBeCloseTo(0.0479, 4); // 0.06388 * 3/4
+    const finalBom = await withTransaction((tx) => readFinalBom(tx, parent));
+    expect(finalBom.map((l) => l.component_product_id)).toEqual([krem]);
+  });
+
+  it('Y6: the hourly sync records a warning when 4-decimal rounding changes a value by >10%', async () => {
+    await ctx.db.query('DELETE FROM import_warnings');
+    const parent = await mkProduct('Vanil krem', { ppid: 990 });
+    await mkProduct('ванилин', { type: 'raw', ping: 61 });
+    await syncPrepacks(clientForResponses({
+      'menu.getPrepacks': [{
+        product_id: '990', ingredient_id: '0', product_name: 'Vanil krem', out: 1000,
+        ingredients: [{
+          structure_id: 'v', ingredient_id: '61', structure_unit: 'g', structure_type: '1',
+          structure_brutto: 0.06, structure_netto: 0.06, ingredient_name: 'ванилин', ingredient_unit: 'kg',
+        }],
+      }],
+    }));
+    const { rows } = await ctx.db.query<{ message: string; entity: string }>(
+      `SELECT message, entity FROM import_warnings WHERE source = 'poster.recipe'`,
+    );
+    expect(rows).toEqual([{
+      entity: `product:${parent}`,
+      message: "ERP: 'ванилин' miqdori 4 xonaga yaxlitlanganda 10% dan ko'p o'zgardi: 0.00006 → 0.0001",
+    }]);
+  });
+
+  it('R6: the hourly sync never flattens a stage split — it skips the recipe and records ONE warning', async () => {
+    await ctx.db.query('DELETE FROM import_warnings');
+    const parent = await mkProduct('Г/П МЕДОВИК ШОК ЧЕРНЫЙ', { ppid: 978, ping: 2402 });
+    await mkProduct('медовик шок черный тесто', { ppid: 1101 });
+    const krem = await mkProduct('медовик шок крем', { ppid: 1102 });
+    await ctx.db.query(
+      `INSERT INTO recipes (product_id, component_product_id, qty_per_unit, brutto, stage)
+       VALUES ($1, $2, 0.5, 0.5, 'decoration')`,
+      [parent, krem],
+    );
+
+    const client = clientForResponses({ 'menu.getPrepacks': [MEDOVIK_PREPACK] });
+    await syncPrepacks(client);
+    await syncPrepacks(client); // second hourly run: still skipped, no duplicate warning
+
+    // Current rows kept exactly (the owner opts in on the audit page).
+    expect(await recipeOf(978)).toEqual([{ component: krem, qty: 0.5, stage: 'decoration' }]);
+    const { rows } = await ctx.db.query<{ message: string; entity: string }>(
+      `SELECT message, entity FROM import_warnings WHERE source = 'poster.recipe'`,
+    );
+    expect(rows).toEqual([{
+      entity: `product:${parent}`,
+      message: "Poster tarkibi o'zgardi, lekin retseptda Hamir/Krem/Bezak bo'linishi bor — 'Poster bilan solishtirish' sahifasida tasdiqlang",
+    }]);
+    const { rows: audits } = await ctx.db.query(`SELECT 1 FROM audit_log WHERE action = 'poster.recipe.import' AND entity_id = $1`, [parent]);
+    expect(audits).toHaveLength(0);
+  });
+
+  it('R6: an all-base recipe is never blocked; a rewrite that changes rows audits the previous rows', async () => {
+    const parent = await mkProduct('Г/П МЕДОВИК ШОК ЧЕРНЫЙ', { ppid: 978, ping: 2402 });
+    const testo = await mkProduct('медовик шок черный тесто', { ppid: 1101 });
+    const krem = await mkProduct('медовик шок крем', { ppid: 1102 });
+    const zg = await mkProduct('з/г медовик', { unit: 'pcs' });
+    // 'other' / 'dough' carry no split (both are the hamir section).
+    await ctx.db.query(
+      `INSERT INTO recipes (product_id, component_product_id, qty_per_unit, brutto, stage)
+       VALUES ($1, $2, 1, 1, 'other'), ($1, $3, 0.2, 0.2, 'dough')`,
+      [parent, zg, testo],
+    );
+    const client = clientForResponses({ 'menu.getPrepacks': [MEDOVIK_PREPACK] });
+    await syncPrepacks(client);
+    const recipe = await recipeOf(978);
+    expect(recipe.map((l) => l.component).sort()).toEqual([testo, krem].sort());
+    expect(recipe.every((l) => l.stage === 'base')).toBe(true);
+
+    const { rows: first } = await ctx.db.query<{ payload: { previous_components?: Array<{ component_product_id: number; stage: string }> } }>(
+      `SELECT payload FROM audit_log WHERE action = 'poster.recipe.import' AND entity_id = $1 ORDER BY id`,
+      [parent],
+    );
+    expect(first).toHaveLength(1);
+    expect(first[0]!.payload.previous_components!.map((r) => [r.component_product_id, r.stage]).sort())
+      .toEqual([[zg, 'other'], [testo, 'dough']].sort());
+
+    // An identical hourly rewrite keeps the audit row small (nothing changed).
+    await syncPrepacks(client);
+    const { rows: all } = await ctx.db.query<{ payload: { previous_components?: unknown } }>(
+      `SELECT payload FROM audit_log WHERE action = 'poster.recipe.import' AND entity_id = $1 ORDER BY id`,
+      [parent],
+    );
+    expect(all).toHaveLength(2);
+    expect(all[1]!.payload.previous_components).toBeUndefined();
+  });
+
+  it('records a name-only binding as an import warning', async () => {
+    await ctx.db.query('DELETE FROM import_warnings');
+    await mkProduct('медовик шок черный тесто', { ppid: 1101 });
+    const krem = await mkProduct('медовик шок крем'); // no Poster ids at all
+    await syncPrepacks(clientForResponses({ 'menu.getPrepacks': [MEDOVIK_PREPACK] }));
+    expect((await recipeOf(978)).map((l) => l.component)).toContain(krem);
+    const { rows } = await ctx.db.query<{ message: string; entity: string }>(
+      `SELECT message, entity FROM import_warnings WHERE source = 'poster.recipe'`,
+    );
+    expect(rows).toEqual([{
+      entity: `product:${krem}`,
+      message: "Poster: 'медовик шок крем' → ERP: 'медовик шок крем' (faqat nomi bo'yicha bog'landi — Poster ID 1102 ERP'da yo'q)",
+    }]);
+  });
+
+  it('logs merged duplicate Poster lines', async () => {
+    await mkProduct('медовик шок черный тесто', { ppid: 1101 });
+    await mkProduct('медовик шок крем', { ppid: 1102 });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      await syncPrepacks(clientForResponses({
+        'menu.getPrepacks': [{
+          ...MEDOVIK_PREPACK,
+          ingredients: [...MEDOVIK_PREPACK.ingredients, { ...MEDOVIK_PREPACK.ingredients[1]!, structure_id: '3' }],
+        }],
+      }));
+      expect(log.mock.calls.some((c) => String(c[0]).includes('merged 2 Poster lines'))).toBe(true);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('still skips a locked recipe', async () => {
+    const parent = await mkProduct('Г/П МЕДОВИК ШОК ЧЕРНЫЙ', { ppid: 978, ping: 2402, locked: true });
+    await mkProduct('медовик шок черный тесто', { ppid: 1101 });
+    await mkProduct('медовик шок крем', { ppid: 1102 });
+    const zg = await mkProduct('з/г медовик', { unit: 'pcs' });
+    await ctx.db.query(
+      `INSERT INTO recipes (product_id, component_product_id, qty_per_unit, brutto) VALUES ($1, $2, 1, 1)`,
+      [parent, zg],
+    );
+    await syncPrepacks(clientForResponses({ 'menu.getPrepacks': [MEDOVIK_PREPACK] }));
+    expect(await recipeOf(978)).toEqual([{ component: zg, qty: 1, stage: 'base' }]);
+  });
+
+  it('records ONE import warning per mismatched component (N8), across recipes and runs', async () => {
+    await ctx.db.query('DELETE FROM import_warnings');
+    await mkProduct('медовик шок черный тесто', { ppid: 1101 });
+    const krem = await mkProduct('крем шоколадный', { ppid: 1102 });
+    // Two prepacks use the same mismatched component.
+    const client = clientForResponses({
+      'menu.getPrepacks': [
+        MEDOVIK_PREPACK,
+        { ...MEDOVIK_PREPACK, product_id: '979', ingredient_id: '2403', product_name: 'Г/П МЕДОВИК ШОК БЕЛЫЙ' },
+      ],
+    });
+
+    await syncPrepacks(client);
+    await syncPrepacks(client); // second hourly run must not add a duplicate row
+
+    expect((await recipeOf(978)).map((l) => l.component)).toContain(krem);
+    expect((await recipeOf(979)).map((l) => l.component)).toContain(krem);
+    const { rows } = await ctx.db.query<{ source: string; message: string; entity: string }>(
+      `SELECT source, message, entity FROM import_warnings WHERE source = 'poster.recipe'`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.entity).toBe(`product:${krem}`);
+    expect(rows[0]!.message).toBe("Poster: 'медовик шок крем' → ERP: 'крем шоколадный' (nomi mos emas)");
   });
 });

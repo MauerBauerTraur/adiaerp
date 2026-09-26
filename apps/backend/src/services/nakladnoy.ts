@@ -35,7 +35,7 @@
  * The pure expansion (`expandToNakladnoy`) is separated from persistence
  * (`createNakladnoy`) so it is unit-testable without a DB.
  */
-import { withTransaction, type TxClient } from '../db/index.js';
+import { withTransaction, type Runner, type TxClient } from '../db/index.js';
 import { writeAudit } from '../lib/audit.js';
 import { AppError } from '../errors/index.js';
 
@@ -78,8 +78,6 @@ const MAX_EXPANSION_DEPTH = 8;
 // -----------------------------------------------------------------------------
 // Recipe loading
 // -----------------------------------------------------------------------------
-
-type Runner = Pick<TxClient, 'query'>;
 
 /**
  * Load every recipe row for `productId` AND, transitively, for any `semi`

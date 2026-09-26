@@ -175,6 +175,26 @@ describe('recipes / BOM', () => {
     expect(res.status).toBe(422);
   });
 
+  it('rejects a qty the 4-decimal column would round to 0 with an Uzbek 422 (not a 500)', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const cake = await makeProduct(ctx.db, { type: 'finished' });
+    const vanilin = await makeProduct(ctx.db, { type: 'raw' });
+    const res = await request(ctx.app)
+      .put(`/api/products/${cake}/recipe`)
+      .set('Authorization', `Bearer ${pm.token}`)
+      .send({ recipe: [{ component_product_id: vanilin, qty_per_unit: 0.00004 }] });
+    expect(res.status).toBe(422);
+    expect(res.body.error.message).toBe(
+      "Miqdor juda kichik — 4 xonali kasrda saqlab bo'lmaydi (0.0001 dan kam).",
+    );
+    // 0.00005 still rounds up to 0.0001 and is accepted.
+    const ok = await request(ctx.app)
+      .put(`/api/products/${cake}/recipe`)
+      .set('Authorization', `Bearer ${pm.token}`)
+      .send({ recipe: [{ component_product_id: vanilin, qty_per_unit: 0.00005 }] });
+    expect(ok.status).toBe(200);
+  });
+
   it('GET recipe returns the stored BOM', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const cake = await makeProduct(ctx.db, { type: 'finished' });

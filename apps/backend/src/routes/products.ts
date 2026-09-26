@@ -16,7 +16,7 @@
  *   - deep cycle (A->B->A...)  : a recursive reachability walk before write.
  */
 import { Router } from 'express';
-import { query, withTransaction, type TxClient } from '../db/index.js';
+import { query, withTransaction } from '../db/index.js';
 import { AppError } from '../errors/index.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
@@ -35,6 +35,7 @@ import {
   requireString,
 } from '../lib/validate.js';
 import { matchesSearch } from '../lib/translit.js';
+import { assertNoBomCycle, readRecipeRows, type RecipeApiRow } from '../services/bom.js';
 import {
   deriveCategory,
   effectiveType,
@@ -91,19 +92,6 @@ function enrich(row: ProductRow): EnrichedProductRow {
     effective_type: effectiveType(row.name, type),
   };
 }
-
-type RecipeRow = {
-  id: number;
-  product_id: number;
-  component_product_id: number;
-  qty_per_unit: number;
-  brutto: number;
-  stage: string | null;
-  component_name: string;
-  component_unit: string;
-  component_cost_price: number | null;
-  component_type: string;
-};
 
 /** Plain column list — used in RETURNING and simple WHERE-by-id queries. */
 const PRODUCT_COLUMNS = `id, name, type, unit, sku, poster_ingredient_id,
@@ -582,74 +570,22 @@ productsRouter.get(
   ),
   asyncHandler(async (req, res) => {
     const productId = parseIdParam(req.params.id, 'id');
-    const exists = await query<{ id: number }>('SELECT id FROM products WHERE id = $1', [
-      productId,
-    ]);
-    if (exists.rows.length === 0) {
-      throw AppError.notFound('Product not found.');
-    }
-    const { rows } = await query<RecipeRow>(
-      `SELECT r.id, r.product_id, r.component_product_id, r.qty_per_unit, r.brutto,
-              r.stage, p.name AS component_name, p.unit AS component_unit,
-              p.cost_price AS component_cost_price, p.type AS component_type
-       FROM recipes r
-       JOIN products p ON p.id = r.component_product_id
-       WHERE r.product_id = $1 ORDER BY r.id`,
+    const exists = await query<{ id: number; recipe_locked: boolean }>(
+      'SELECT id, recipe_locked FROM products WHERE id = $1',
       [productId],
     );
+    const product = exists.rows[0];
+    if (product === undefined) {
+      throw AppError.notFound('Product not found.');
+    }
     res.status(200).json({
       product_id: productId,
-      recipe: rows.map((r) => ({
-        ...r,
-        qty_per_unit: Number(r.qty_per_unit),
-        brutto: Number(r.brutto),
-        stage: r.stage ?? null,
-      })),
+      // Whether the hourly Poster sync skips this recipe (hand-edited).
+      recipe_locked: product.recipe_locked,
+      recipe: await readRecipeRows(poolRunner, productId),
     });
   }),
 );
-
-/**
- * Reject a deep BOM cycle (AC2.2). Given the proposed direct components of
- * `productId`, walk the existing recipe graph from each component: if any
- * path reaches `productId`, adding it would close a cycle.
- *
- * Runs against a `TxClient` so the BFS, the DELETE and the INSERTs all live
- * inside ONE transaction — that is the only way to keep two concurrent
- * recipe writes from racing past each other's check and closing a cycle.
- */
-async function assertNoBomCycle(
-  client: TxClient,
-  productId: number,
-  componentIds: readonly number[],
-): Promise<void> {
-  // Components and the product itself are the starting forbidden set.
-  for (const componentId of componentIds) {
-    if (componentId === productId) {
-      throw AppError.validation('A product cannot be a component of itself.');
-    }
-  }
-  // BFS over the existing recipe graph from each proposed component.
-  const visited = new Set<number>();
-  const queue: number[] = [...componentIds];
-  while (queue.length > 0) {
-    const current = queue.shift() as number;
-    if (current === productId) {
-      throw AppError.validation('This BOM would create a cycle in the recipe graph.');
-    }
-    if (visited.has(current)) {
-      continue;
-    }
-    visited.add(current);
-    const { rows } = await client.query<{ component_product_id: number }>(
-      'SELECT component_product_id FROM recipes WHERE product_id = $1',
-      [current],
-    );
-    for (const row of rows) {
-      queue.push(Number(row.component_product_id));
-    }
-  }
-}
 
 // PUT /api/products/:id/recipe  — full replace of the BOM.
 productsRouter.put(
@@ -680,6 +616,11 @@ productsRouter.put(
         throw AppError.validation('Each recipe line needs a "component_product_id".');
       }
       const qtyPerUnit = requirePositiveNumber(line, 'qty_per_unit');
+      // recipes.qty_per_unit is NUMERIC(14,4) with CHECK (> 0): a value below
+      // 0.00005 rounds to 0 and used to surface as a bare 500.
+      if (qtyPerUnit < 0.00005) {
+        throw AppError.validation("Miqdor juda kichik — 4 xonali kasrda saqlab bo'lmaydi (0.0001 dan kam).");
+      }
       // `brutto` is optional. Migration 0039 gave the column DEFAULT 0 and
       // documents 0 as "not set", and the create-product dialog sends recipe
       // lines without it — demanding it here 422'd every new product that was
@@ -717,19 +658,24 @@ productsRouter.put(
     }
 
     // Full replace inside one transaction: cycle check + delete old lines +
-    // insert new + audit. AC2.2 — running the cycle BFS on the same client
-    // as the writes is the only way to keep two concurrent recipe writes
-    // from racing past each other's check and closing a cycle.
+    // insert new + audit. AC2.2 — the cycle BFS runs on the same client as
+    // the writes (see assertNoBomCycle).
     const inserted = await withTransaction(async (tx) => {
+      // Lock the product row FIRST — the same order as the Poster sync and
+      // the re-sync endpoint (products, then recipes). Taking the recipe row
+      // locks first and the product lock last used to invite a deadlock with
+      // them. It also serialises two concurrent saves of the same recipe.
+      // NO KEY UPDATE: only recipes/recipe_locked change (FK checks still pass).
+      await tx.query('SELECT id FROM products WHERE id = $1 FOR NO KEY UPDATE', [productId]);
       await assertNoBomCycle(
         tx,
         productId,
         items.map((it) => it.componentId),
       );
       await tx.query('DELETE FROM recipes WHERE product_id = $1', [productId]);
-      const out: RecipeRow[] = [];
+      const out: RecipeApiRow[] = [];
       for (const it of items) {
-        const { rows } = await tx.query<RecipeRow>(
+        const { rows } = await tx.query<RecipeApiRow>(
           `INSERT INTO recipes (product_id, component_product_id, qty_per_unit, brutto, stage)
            VALUES ($1, $2, $3, $4, $5)
            RETURNING id, product_id, component_product_id, qty_per_unit, brutto, stage`,

@@ -4,6 +4,11 @@
  *   POST /api/integrations/poster/webhook[/:secret]   — no JWT; secret-token gated
  *   POST /api/integrations/poster/sync                — pm; ?entity=all|locations|products|stock|sales
  *   GET  /api/integrations/poster/status              — pm; recent poster_sync_log rows
+ *   GET  /api/integrations/poster/product-recipe/:id  — pm, production_manager; preview
+ *   POST /api/integrations/poster/product-recipe/:id/apply
+ *                                                     — pm, production_manager; re-sync + unlock
+ *   /api/integrations/poster/recipe-audit[/run|/apply|/restore|/job]
+ *                                                     — bulk audit/apply/restore (routes/posterRecipeAudit.ts)
  *
  * Webhook auth (TZ OS-6 — until Poster documents an HMAC signature):
  *   Poster lets us configure ANY URL as its webhook target. We embed an
@@ -19,9 +24,27 @@ import { loadConfig } from '../config/index.js';
 import { query } from '../db/index.js';
 import { AppError } from '../errors/index.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
+import { getPrincipal } from '../lib/principal.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { createPosterClientFromConfig } from '../integrations/poster/client.js';
+import { RECIPE_LOCK_BUSY_MESSAGE, acquirePosterRecipeLock } from '../integrations/poster/recipeLock.js';
+import {
+  findPosterRecipe,
+  planRecipeRows,
+  readRecipeSnapshot,
+  type ErpProductRef,
+} from '../integrations/poster/posterRecipe.js';
+import { poolRunner } from '../lib/audit.js';
+import {
+  NO_USABLE_LINES_MESSAGE,
+  applyPosterRecipe,
+  buildForProduct,
+  missingRecipeMessage,
+  notFoundMessage,
+  requirePosterRecipeReader,
+} from '../services/posterRecipeApply.js';
+import { posterRecipeAuditRouter } from './posterRecipeAudit.js';
 import {
   runSeedSync,
   syncSpots,
@@ -34,7 +57,6 @@ import {
   type SeedSelector,
 } from '../integrations/poster/seedSync.js';
 import { syncStockLeftovers } from '../integrations/poster/stockSync.js';
-import { redactUrl } from '../integrations/poster/syncLog.js';
 import { fallbackPollTransactions } from '../integrations/poster/salesSync.js';
 import { checkSoldProductsAndCreateOrders } from '../services/autoOrder.js';
 import { recalculateBomCosts } from '../services/costCalc.js';
@@ -162,65 +184,75 @@ posterIntegrationRouter.post(
       throw AppError.internal('POSTER_TOKEN is not configured — cannot run sync.');
     }
     const client = createPosterClientFromConfig();
+    // products / all rewrite recipes: share the recipe lock with the hourly
+    // recipe sync and the bulk apply/restore job (review R5). Other entities
+    // never touch recipes and run freely.
+    const needsRecipeLock = entityRaw === 'products' || entityRaw === 'all';
+    const held = needsRecipeLock ? await acquirePosterRecipeLock() : null;
+    if (needsRecipeLock && held === null) throw AppError.conflict(RECIPE_LOCK_BUSY_MESSAGE);
     const out: unknown[] = [];
-    switch (entityRaw) {
-      case 'locations':
-        out.push(await syncSpots(client, 'manual'));
-        out.push(await syncStorages(client, 'manual'));
-        out.push((await syncWorkshops(client, 'manual')).result);
-        break;
-      case 'products':
-        out.push(await syncIngredients(client, 'manual'));
-        out.push(await syncPrepacks(client, 'manual'));
-        out.push(await syncMenuProducts(client, 'manual'));
-        break;
-      case 'stock': {
-        const r = await syncStockLeftovers(client, 'manual');
-        out.push({ entity: 'leftovers', ...r });
-        // After stock sync refreshes raw material costs, propagate to BOM tree.
-        const costResult = await recalculateBomCosts();
-        out.push({ entity: 'costs', ...costResult });
-        break;
+    try {
+      switch (entityRaw) {
+        case 'locations':
+          out.push(await syncSpots(client, 'manual'));
+          out.push(await syncStorages(client, 'manual'));
+          out.push((await syncWorkshops(client, 'manual')).result);
+          break;
+        case 'products':
+          out.push(await syncIngredients(client, 'manual'));
+          out.push(await syncPrepacks(client, 'manual'));
+          out.push(await syncMenuProducts(client, 'manual'));
+          break;
+        case 'stock': {
+          const r = await syncStockLeftovers(client, 'manual');
+          out.push({ entity: 'leftovers', ...r });
+          // After stock sync refreshes raw material costs, propagate to BOM tree.
+          const costResult = await recalculateBomCosts();
+          out.push({ entity: 'costs', ...costResult });
+          break;
+        }
+        case 'sales': {
+          const r = await fallbackPollTransactions(client, 60);
+          out.push({ entity: 'transactions', ...r });
+          break;
+        }
+        case 'costs': {
+          // Standalone BOM cost recalculation — no Poster API call needed.
+          const costResult = await recalculateBomCosts();
+          out.push({ entity: 'costs', ...costResult });
+          break;
+        }
+        case 'workshops': {
+          // Dedicated pass: update production_location_id + storage_location_id
+          // for all products based on their Poster workshop assignment.
+          const workshopResult = await syncProductWorkshops(client, 'manual');
+          out.push({ ...workshopResult, entity: 'workshops' });
+          break;
+        }
+        case 'auto-orders': {
+          // Manually trigger auto-order check: evaluate all products sold in the
+          // last 7 days and create production orders for those below min_qty.
+          const aoResult = await checkSoldProductsAndCreateOrders();
+          out.push({ entity: 'auto-orders', ...aoResult });
+          break;
+        }
+        case 'all':
+        default: {
+          out.push(...(await runSeedSync(client, 'all')));
+          // After full product sync, apply workshop assignments (covers products
+          // that were seeded before locations existed, or had workshop_id=0 before).
+          const wResult = await syncProductWorkshops(client, 'manual');
+          out.push({ ...wResult, entity: 'workshops' });
+          const r = await syncStockLeftovers(client, 'manual');
+          out.push({ ...r, entity: 'leftovers' });
+          // Propagate freshly-synced raw material costs through the BOM tree.
+          const costResult = await recalculateBomCosts();
+          out.push({ ...costResult, entity: 'costs' });
+          break;
+        }
       }
-      case 'sales': {
-        const r = await fallbackPollTransactions(client, 60);
-        out.push({ entity: 'transactions', ...r });
-        break;
-      }
-      case 'costs': {
-        // Standalone BOM cost recalculation — no Poster API call needed.
-        const costResult = await recalculateBomCosts();
-        out.push({ entity: 'costs', ...costResult });
-        break;
-      }
-      case 'workshops': {
-        // Dedicated pass: update production_location_id + storage_location_id
-        // for all products based on their Poster workshop assignment.
-        const workshopResult = await syncProductWorkshops(client, 'manual');
-        out.push({ ...workshopResult, entity: 'workshops' });
-        break;
-      }
-      case 'auto-orders': {
-        // Manually trigger auto-order check: evaluate all products sold in the
-        // last 7 days and create production orders for those below min_qty.
-        const aoResult = await checkSoldProductsAndCreateOrders();
-        out.push({ entity: 'auto-orders', ...aoResult });
-        break;
-      }
-      case 'all':
-      default: {
-        out.push(...(await runSeedSync(client, 'all')));
-        // After full product sync, apply workshop assignments (covers products
-        // that were seeded before locations existed, or had workshop_id=0 before).
-        const wResult = await syncProductWorkshops(client, 'manual');
-        out.push({ ...wResult, entity: 'workshops' });
-        const r = await syncStockLeftovers(client, 'manual');
-        out.push({ ...r, entity: 'leftovers' });
-        // Propagate freshly-synced raw material costs through the BOM tree.
-        const costResult = await recalculateBomCosts();
-        out.push({ ...costResult, entity: 'costs' });
-        break;
-      }
+    } finally {
+      await held?.release();
     }
     res.status(200).json({ results: out });
   }),
@@ -234,165 +266,116 @@ posterIntegrationRouter.post(
 // review/import them into the ERP recipe without running a full sync.
 // -----------------------------------------------------------------------------
 
-/**
- * Poster failures used to escape as raw PosterApiError, which the terminal
- * error handler reports as a bare 500 "An unexpected error occurred." — the
- * user could not tell a Poster outage from an ERP bug. Surface the real reason
- * as a 502 instead.
- */
-async function posterCall<T>(method: string, fn: () => Promise<T>): Promise<T> {
-  try {
-    return await fn();
-  } catch (err) {
-    // The detail can be a fetch/URL error carrying ?token=… — every other
-    // Poster error path redacts before it is stored or shown, and this one is
-    // sent straight to the browser.
-    const detail = redactUrl(err instanceof Error ? err.message : String(err));
-    throw AppError.posterSync(`Poster (${method}): ${detail}`);
+/** Load the ERP product named by `:erpProductId` (422 bad id, 404 missing). */
+async function loadErpProduct(rawId: unknown): Promise<ErpProductRef> {
+  const productId = Number(rawId);
+  if (!Number.isInteger(productId) || productId <= 0) {
+    throw AppError.validation("Mahsulot ID noto'g'ri.");
   }
+  const { rows } = await query<ErpProductRef>(
+    `SELECT id, name, type::text AS type, batch_yield,
+            poster_ingredient_id, poster_product_id
+       FROM products WHERE id = $1`,
+    [productId],
+  );
+  const erp = rows[0];
+  if (erp === undefined) throw AppError.notFound('Mahsulot topilmadi.');
+  return erp;
 }
 
-function normaliseQty(structureUnit: string, ingredientUnit: string, raw: number | string): number {
-  const n = typeof raw === 'number' ? raw : Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  const su = structureUnit.toLowerCase();
-  const iu = ingredientUnit.toLowerCase();
-  if (su === iu) return n;
-  if ((su === 'g' && iu === 'kg') || (su === 'ml' && iu === 'l')) return n / 1000;
-  if ((su === 'kg' && iu === 'g') || (su === 'l' && iu === 'ml')) return n * 1000;
-  return n;
-}
-
+const round6 = (n: number): number => Math.round(n * 1e6) / 1e6;
 
 posterIntegrationRouter.get(
   '/product-recipe/:erpProductId',
   authenticate,
   authorize('pm', 'production_manager'),
   asyncHandler(async (req, res) => {
-    const productId = Number(req.params.erpProductId);
-    if (!Number.isInteger(productId) || productId <= 0) {
-      throw AppError.validation('Invalid product id.');
-    }
+    const erp = await loadErpProduct(req.params.erpProductId);
+    const reader = requirePosterRecipeReader();
 
-    // Load ERP product to find Poster IDs.
-    const { rows: pRows } = await query<{
-      id: number; name: string;
-      type: string;
-      batch_yield: string | null;
-      poster_ingredient_id: number | null;
-      poster_product_id: number | null;
-    }>(
-      `SELECT id, name, type::text AS type, batch_yield::text AS batch_yield,
-              poster_ingredient_id, poster_product_id
-         FROM products WHERE id = $1`,
-      [productId],
-    );
-    const erp = pRows[0];
-    if (!erp) throw AppError.notFound('Product not found.');
-
-    const cfg = loadConfig();
-    if (cfg.poster.token === '') throw AppError.internal('POSTER_TOKEN not configured.');
-
-    const client = createPosterClientFromConfig();
-
-    // Determine if this is a prepack (poster_ingredient_id) or menu product (poster_product_id).
-    type Line = { component_product_id: number; component_name: string; component_unit: string; qty_per_unit: number; brutto: number; found: boolean };
-    const lines: Line[] = [];
-    const notFound: string[] = [];
-
-    async function resolveIngredient(posterId: number, ingName: string, structUnit: string, ingUnit: string, brutto: number | string, netto: number | string, batchYield: number, structureType?: string) {
-      // structure_type=2 means prepack component: Poster stores the prepack's
-      // product_id in ingredient_id, so look up by poster_product_id first.
-      const isPrepack = String(structureType ?? '1') === '2';
-      const firstQ = isPrepack
-        ? 'SELECT id, name, unit::text AS unit FROM products WHERE poster_product_id = $1'
-        : 'SELECT id, name, unit::text AS unit FROM products WHERE poster_ingredient_id = $1';
-      const secondQ = isPrepack
-        ? 'SELECT id, name, unit::text AS unit FROM products WHERE poster_ingredient_id = $1'
-        : 'SELECT id, name, unit::text AS unit FROM products WHERE poster_product_id = $1';
-      const r1 = await query<{ id: number; name: string; unit: string }>(firstQ, [posterId]);
-      const r2 = r1.rows.length === 0
-        ? await query<{ id: number; name: string; unit: string }>(secondQ, [posterId])
-        : r1;
-      const comp = r2.rows[0];
-      const bruttoNorm = normaliseQty(structUnit, ingUnit, brutto);
-      const nettoNorm = normaliseQty(structUnit, ingUnit, netto ?? brutto);
-      // For "p"/pcs ingredients, Poster stores netto in grams — use brutto (pieces).
-      const isPcs = ingUnit.toLowerCase() === 'p' || ingUnit.toLowerCase() === 'pcs';
-      const qtyNorm = (!isPcs && nettoNorm > 0) ? nettoNorm : bruttoNorm;
-      const safeYield = batchYield > 0 ? batchYield : 1;
-      const perUnit = qtyNorm / safeYield;
-      const bruttoPerUnit = bruttoNorm / safeYield;
-      if (comp && perUnit > 0 && Number.isFinite(perUnit)) {
-        lines.push({
-          component_product_id: comp.id,
-          component_name: comp.name,
-          component_unit: comp.unit,
-          qty_per_unit: Math.round(perUnit * 1e6) / 1e6,
-          brutto: Math.round(bruttoPerUnit * 1e6) / 1e6,
-          found: true,
-        });
-      } else {
-        notFound.push(ingName);
-      }
-    }
-
-    // A Poster type=2 product (a stocked menu item) carries BOTH ids, so testing
-    // poster_ingredient_id first used to send every finished product down the
-    // prepack branch, where it is never found — the menu branch was unreachable
-    // and the button silently returned an empty recipe. Try the prepack lookup
-    // when there is an ingredient id, but fall through to the menu when the
-    // prepack does not exist.
-    let resolved = false;
-
-    if (erp.poster_ingredient_id !== null) {
-      const prepacks = await posterCall('menu.getPrepacks', () => client.getPrepacks());
-      const pp = prepacks.find((p) => Number(p.ingredient_id) === erp.poster_ingredient_id);
-      if (pp) {
-        const batchYield = Number(pp.out) > 0 ? Number(pp.out) / 1000 : 1;
-        for (const ing of pp.ingredients ?? []) {
-          const pid = Number(ing.ingredient_id);
-          if (!Number.isInteger(pid) || pid <= 0) continue;
-          await resolveIngredient(pid, ing.ingredient_name, String(ing.structure_unit ?? ''), String(ing.ingredient_unit ?? ''), ing.structure_brutto, ing.structure_netto ?? ing.structure_brutto, batchYield, String(ing.structure_type ?? '1'));
-        }
-        resolved = true;
-      }
-    }
-
-    if (!resolved && erp.poster_product_id !== null) {
-      const mp = await posterCall('menu.getProduct', () => client.getProduct(erp.poster_product_id as number));
-      if (!mp) {
-        res.status(200).json({ lines: [], not_found: [], message: 'Product not found in Poster menu.' });
-        return;
-      }
-      // A menu product's lines are per unit (divisor 1). But a prepack whose
-      // record has dropped out of getPrepacks reaches this branch too, and its
-      // Poster lines are per BATCH — dividing by 1 would overstate every
-      // quantity by the batch size, so use the yield stored on the row.
-      const storedYield = Number(erp.batch_yield ?? 0);
-      const menuYield = erp.type === 'semi' && storedYield > 0 ? storedYield : 1;
-      for (const ing of mp.ingredients ?? []) {
-        const pid = Number(ing.ingredient_id);
-        if (!Number.isInteger(pid) || pid <= 0) continue;
-        await resolveIngredient(pid, ing.ingredient_name, String(ing.structure_unit ?? ''), String(ing.ingredient_unit ?? ''), ing.structure_brutto, ing.structure_netto ?? ing.structure_brutto, menuYield, String(ing.structure_type ?? '1'));
-      }
-      resolved = true;
-    }
-
-    if (!resolved) {
+    // Same lookup + same build as the apply endpoint, the bulk audit and the
+    // hourly sync, so the preview shows exactly what "apply" would write.
+    const lookup = await findPosterRecipe(reader, erp);
+    if (!lookup.found) {
       res.status(200).json({
         lines: [],
         not_found: [],
-        message: erp.poster_ingredient_id === null && erp.poster_product_id === null
-          ? 'Product has no Poster link (poster_ingredient_id and poster_product_id are both null).'
-          : 'Product not found in Poster prepacks or menu.',
+        message: missingRecipeMessage(lookup.reason),
+        stages_will_reset: false,
       });
       return;
     }
 
-    res.status(200).json({ lines, not_found: notFound });
+    const built = await buildForProduct(lookup, erp);
+    // Exactly what the client (RecipeDialog) reads per line.
+    const lines = built.components.map((c) => ({
+      component_product_id: c.componentProductId,
+      qty_per_unit: round6(c.qtyPerUnit),
+      brutto: round6(c.brutto),
+    }));
+    // The client only surfaces `message` when no line resolved — say why.
+    const message =
+      lines.length > 0
+        ? undefined
+        : built.notFound.length > 0
+          ? notFoundMessage(built.notFound)
+          : NO_USABLE_LINES_MESSAGE;
+
+    // Would "apply" have to drop a Hamir/Krem/Bezak split? Same rule as the write.
+    const plan = planRecipeRows(await readRecipeSnapshot(poolRunner, erp.id), built.components, erp.id);
+
+    res.status(200).json({
+      lines,
+      not_found: built.notFound,
+      ...(message !== undefined ? { message } : {}),
+      poster_name: lookup.posterName,
+      warnings: built.warnings,
+      stages_will_reset: plan.stagesReset,
+    });
   }),
 );
+
+// -----------------------------------------------------------------------------
+// 4.9.3b Re-sync ONE product's recipe from Poster and unlock it —
+// pm/production_manager.
+// POST /api/integrations/poster/product-recipe/:erpProductId/apply
+//
+// A hand-saved recipe sets `recipe_locked`, after which the hourly sync skips
+// the product for good. This endpoint is the explicit "take Poster's recipe
+// again" action. The transaction lives in services/posterRecipeApply.ts and is
+// shared with the bulk recipe-audit apply job; every rejection is a 422 that
+// leaves the recipe and the lock untouched.
+// -----------------------------------------------------------------------------
+
+posterIntegrationRouter.post(
+  '/product-recipe/:erpProductId/apply',
+  authenticate,
+  authorize('pm', 'production_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const erp = await loadErpProduct(req.params.erpProductId);
+    const reader = requirePosterRecipeReader();
+    const lookup = await findPosterRecipe(reader, erp);
+    const result = await applyPosterRecipe(erp, lookup, {
+      userId: principal.userId,
+      activeLocationId: principal.activeLocationId,
+    });
+    res.status(200).json({
+      product_id: erp.id,
+      recipe_locked: false,
+      source: result.source,
+      poster_product_id: result.posterProductId,
+      poster_name: result.posterName,
+      recipe: result.recipe,
+      warnings: result.warnings,
+      stages_reset: result.stagesReset,
+    });
+  }),
+);
+
+// 4.9.3c Bulk recipe audit / apply (every product vs Poster) — see
+// routes/posterRecipeAudit.ts.
+posterIntegrationRouter.use('/recipe-audit', posterRecipeAuditRouter);
 
 // -----------------------------------------------------------------------------
 // 4.9.3 Status — pm reads the recent sync log.
