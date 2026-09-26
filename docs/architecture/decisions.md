@@ -4,6 +4,12 @@ Loyiha bo'yicha qabul qilingan asosiy qarorlar shu yerda yoziladi. Yangi qaror �
 
 ---
 
+## 2026-09-26 — D8. Poster ↔ ERP retsept pariteti
+
+Retseptlar uchun **Poster — manba haqiqati** (komponentlar va brutto miqdorlar). Qo'lda saqlangan (`recipe_locked`) retseptlar "Poster bilan solishtirish" sahifasidan qayta sinxronlanadi va qulfi yechiladi. Hamir/Krem/Bezak bo'linishi jimgina yo'qolmaydi: tarkib o'zgarmasa bosqichlar saqlanadi (proporsional taqsimot), o'zgarsa — faqat egasining alohida tasdig'i bilan tekislanadi; soatlik sync bunday retseptni o'tkazib yuboradi. Ommaviy qo'llash snapshot bilan tiklanadi va soatlik sync bilan bitta advisory lock'ni bo'lishadi. Tafsilot: `docs/architecture/adr-0018-poster-recipe-parity.md`.
+
+---
+
 ## 2026-05-28 — D7. Ta'minot → Sex skladi re-modeling
 
 Har sex (Tort, Perojniy, Yarim Fabrika) o'z `sex_storage` typedagi buferiga ega. Sex va sex skladi alohida `location_id`. Migration 0021 `location_type` enum'iga `sex_storage` qiymatini qo'shdi (`supply` dan oldin). Migration 0022 mavjud uchta supply qatorni `sex_storage` ga ko'chirdi va Yarim Fabrika sexi (production) qaytadan yaratildi:
