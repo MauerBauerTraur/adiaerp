@@ -8,6 +8,8 @@ import { LocationsPage } from '@/pages/locations/LocationsPage';
 import { LocationDetailPage } from '@/pages/locations/LocationDetailPage';
 import { EmployeesPage } from '@/pages/employees/EmployeesPage';
 import { ProductsPage } from '@/pages/products/ProductsPage';
+import { RecipeAuditPage } from '@/pages/products/RecipeAuditPage';
+import { RECIPE_AUDIT_PATH, RECIPE_AUDIT_ROLES } from '@/pages/products/recipeAuditAccess';
 import { StockPage } from '@/pages/stock/StockPage';
 import { ReplenishmentPage } from '@/pages/replenishment/ReplenishmentPage';
 import { ReplenishmentDetailPage } from '@/pages/replenishment/ReplenishmentDetailPage';
@@ -390,6 +392,16 @@ export function AppRouter() {
 
         {/* M2 — products & recipes. */}
         <Route path="/products" element={<ProductsPage />} />
+        {/* Poster recipe audit — a sub-view of Mahsulotlar, so it rides on the
+            /products nav entry (prefix match); the role gate narrows it. */}
+        <Route
+          path={RECIPE_AUDIT_PATH}
+          element={
+            <RoleRoute allow={RECIPE_AUDIT_ROLES}>
+              <RecipeAuditPage />
+            </RoleRoute>
+          }
+        />
 
         {/* M1 — locations. */}
         <Route path="/locations" element={<LocationsPage />} />

@@ -115,3 +115,24 @@ describe('ProductsPage — EPIC 1', () => {
     expect(await screen.findByText('2 ta mahsulot')).toBeInTheDocument();
   });
 });
+
+describe('ProductsPage — "Poster bilan solishtirish" entry', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each(['pm', 'production_manager'] as const)('%s gets the link to the recipe audit', async (role) => {
+    mockProducts([CHOCO_CAKE]);
+    renderWithProviders(<ProductsPage />, { role, locationId: null, locations: [] });
+    await screen.findByText('Шоколадный торт');
+    expect(screen.getByRole('link', { name: 'Poster bilan solishtirish' })).toHaveAttribute(
+      'href',
+      '/products/recipe-audit',
+    );
+  });
+
+  it('store_manager does not', async () => {
+    mockProducts([CHOCO_CAKE]);
+    renderWithProviders(<ProductsPage />, { role: 'store_manager', locationId: 7 });
+    await screen.findByText('Шоколадный торт');
+    expect(screen.queryByRole('link', { name: 'Poster bilan solishtirish' })).toBeNull();
+  });
+});

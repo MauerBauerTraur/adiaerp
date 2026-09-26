@@ -1709,3 +1709,92 @@ export interface ProductionCostSummary {
   grand_profit: number;
   grand_xomashyo: number;
 }
+
+// -----------------------------------------------------------------------------
+// Poster recipe audit — GET/POST /api/integrations/poster/recipe-audit[/run|/apply]
+// -----------------------------------------------------------------------------
+
+/** A background audit (dry run), bulk-apply or restore job. Only one runs at a time. */
+export interface RecipeAuditJob {
+  id: string;
+  kind: 'audit' | 'apply' | 'restore';
+  status: 'running' | 'done' | 'failed';
+  started_at: string;
+  finished_at: string | null;
+  progress: { done: number; total: number };
+  /** Uzbek, user-facing; present when `status === 'failed'`. */
+  error?: string;
+}
+
+/** `poster_error`: the Poster API failed for this product (not the same as `poster_missing`). */
+export type RecipeAuditStatus =
+  | 'match'
+  | 'differs'
+  | 'poster_missing'
+  | 'poster_error'
+  | 'unresolved';
+
+/** One component of a recipe, ERP vs Poster (quantities per 1 unit, brutto). */
+export interface RecipeAuditLine {
+  /** `null` when the Poster ingredient has no ERP product. */
+  component_product_id: number | null;
+  component_name: string;
+  erp_qty: number | null;
+  poster_qty: number | null;
+  stage: string | null;
+  diff: 'same' | 'changed' | 'erp_only' | 'poster_only';
+}
+
+export interface RecipeAuditItem {
+  product_id: number;
+  product_name: string;
+  product_type: string;
+  product_unit: string;
+  recipe_locked: boolean;
+  status: RecipeAuditStatus;
+  poster_name: string | null;
+  source: 'prepack' | 'menu' | null;
+  lines: RecipeAuditLine[];
+  not_found: string[];
+  warnings: string[];
+  /** Applying would drop the ERP's Hamir/Krem/Bezak split (Poster has no stages). */
+  stages_will_reset: boolean;
+  /** Set on the apply report for targeted rows; `restored` after a restore job. */
+  apply_result?: 'applied' | 'skipped' | 'failed' | 'restored';
+  apply_message?: string;
+}
+
+export interface RecipeAuditReport {
+  generated_at: string;
+  summary: {
+    total: number;
+    match: number;
+    differs: number;
+    locked: number;
+    poster_missing: number;
+    poster_error: number;
+    unresolved: number;
+    stages_will_reset: number;
+    /** Present on the apply report. `skipped` counts failed results too. */
+    applied?: number;
+    skipped?: number;
+    /** Present on a restore report; `applied` then excludes restores. */
+    restored?: number;
+  };
+  /** May be empty (e.g. the final audit of a restore failed) — `summary` still holds the counts. */
+  items: RecipeAuditItem[];
+  /** Report-level notes, e.g. "Yakuniy tekshiruv bajarilmadi…". */
+  warnings?: string[];
+  /** Requested ids the apply skipped because they were not targets (no row in `items`). */
+  skipped_outside_scope?: Array<{ product_id: number; apply_message: string }>;
+}
+
+export interface RecipeAuditState {
+  job: RecipeAuditJob | null;
+  /** Latest dry-run report. */
+  report: RecipeAuditReport | null;
+  /** Outcome of the last bulk apply (or restore), kept apart from later dry runs. */
+  last_apply_report: RecipeAuditReport | null;
+  /** Apply job whose snapshot can still be restored; `null` when none. */
+  restorable_job_id: string | null;
+}

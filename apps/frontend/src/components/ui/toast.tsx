@@ -10,7 +10,8 @@ import {
 import { CheckCircle2, X, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-type ToastVariant = 'success' | 'error';
+/** `warning`: the action succeeded, but with something the user must not miss. */
+export type ToastVariant = 'success' | 'error' | 'warning';
 
 interface Toast {
   id: number;
@@ -61,11 +62,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           <div
             key={toast.id}
             role={toast.variant === 'error' ? 'alert' : 'status'}
+            data-variant={toast.variant}
             className={cn(
-              'pointer-events-auto flex items-start gap-3 rounded-md border p-3 text-sm shadow-lg',
-              toast.variant === 'success'
-                ? 'border-success/30 bg-card text-foreground'
-                : 'border-destructive/40 bg-card text-foreground',
+              'pointer-events-auto flex items-start gap-3 rounded-md border bg-card p-3 text-sm text-foreground shadow-lg',
+              toast.variant === 'success' && 'border-success/30',
+              toast.variant === 'error' && 'border-destructive/40',
+              toast.variant === 'warning' && 'border-warning/50',
             )}
           >
             {toast.variant === 'success' ? (
@@ -75,7 +77,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               />
             ) : (
               <AlertTriangle
-                className="mt-0.5 size-4 shrink-0 text-destructive"
+                className={cn(
+                  'mt-0.5 size-4 shrink-0',
+                  toast.variant === 'warning' ? 'text-warning' : 'text-destructive',
+                )}
                 aria-hidden="true"
               />
             )}

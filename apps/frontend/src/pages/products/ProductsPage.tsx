@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, ArrowUpDown, BarChart2, Loader2, Package, Pencil, Plus, ScrollText, Search, Settings2, Trash2, TrendingDown, TrendingUp, X } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { ArrowDown, ArrowUp, ArrowUpDown, BarChart2, GitCompareArrows, Loader2, Package, Pencil, Plus, ScrollText, Search, Settings2, Trash2, TrendingDown, TrendingUp, X } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -47,6 +48,7 @@ import { useToast } from '@/components/ui/toast';
 import type { Location, Product, ProductType, StockRow, Unit } from '@/lib/types';
 import { ProductFormDialog } from './ProductFormDialog';
 import { RecipeDialog } from './RecipeDialog';
+import { RECIPE_AUDIT_PATH, RECIPE_AUDIT_ROLES } from './recipeAuditAccess';
 import { ProductDetailSheet, type Tab as DetailTab } from './ProductDetailSheet';
 
 /** Lazy render batch */
@@ -76,6 +78,7 @@ export function ProductsPage() {
   const canEdit   = isSuperAdmin || user?.role === 'raw_warehouse_manager';
   const canDelete = isSuperAdmin;
   const canEditRecipe = isSuperAdmin || user?.role === 'production_manager';
+  const canAuditRecipes = user !== null && RECIPE_AUDIT_ROLES.includes(user.role);
 
   const bp = useBreakpoint();
   const showMobileCards = bp === 'xs';
@@ -590,6 +593,14 @@ export function ProductsPage() {
         action={
           <div className="flex flex-wrap items-center gap-2">
             <ViewToggle value={view} onChange={setView} />
+            {canAuditRecipes && (
+              <Button variant="outline" asChild>
+                <Link to={RECIPE_AUDIT_PATH}>
+                  <GitCompareArrows className="size-4" aria-hidden="true" />
+                  Poster bilan solishtirish
+                </Link>
+              </Button>
+            )}
             {canCreate && (
               <Button onClick={() => setCreateOpen(true)}>
                 <Plus className="size-4" />
@@ -1012,6 +1023,7 @@ export function ProductsPage() {
         allProducts={allProducts}
         canEdit={canEditRecipe}
         onProductClick={(p) => { setRecipeProduct(null); openDetail(p); }}
+        onSaved={refetch}
       />
       <ProductDetailSheet
         product={detailProduct}
