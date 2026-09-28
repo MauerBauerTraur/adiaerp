@@ -5,22 +5,34 @@ import { Button } from '@/components/ui/button';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { UNIT_LABELS } from '@/lib/labels';
 
-interface UsageRow {
+/** 'ombordan' = issued by the raw warehouse; 'sexdan' = a semi handed over by another sex. */
+export type UsageSource = 'ombordan' | 'sexdan';
+
+export interface UsageRow {
   product_id: number;
   product_name: string;
   unit: string;
+  source?: UsageSource;
   total_qty: number;
   order_count: number;
   total_cost: number | null;
 }
 
-function thisMonthRange() {
+const SOURCE_LABELS: Record<UsageSource, string> = {
+  ombordan: 'Ombordan berilgan xomashyo',
+  sexdan: 'Sexlardan kelgan yarim tayyor',
+};
+
+/** Today in the viewer's local calendar — toISOString() would give the UTC day. */
+function todayLocal(): string {
   const now = new Date();
-  const y = now.getFullYear();
   const m = String(now.getMonth() + 1).padStart(2, '0');
-  const lastDay = new Date(y, now.getMonth() + 1, 0).getDate();
-  return { from: `${y}-${m}-01`, to: `${y}-${m}-${lastDay}` };
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${now.getFullYear()}-${m}-${d}`;
 }
+
+/** 2026-09-28 -> 28.09.2026 */
+const fmtDate = (iso: string) => iso.split('-').reverse().join('.');
 
 const fmtQty = (n: number) =>
   n.toLocaleString('uz-UZ', { maximumFractionDigits: 3 });
@@ -29,18 +41,27 @@ const fmtSom = (n: number) =>
 const unitLabel = (u: string) => (UNIT_LABELS as Record<string, string>)[u] ?? u;
 
 export function RawMaterialsUsagePage() {
-  const def = thisMonthRange();
-  const [from, setFrom] = useState(def.from);
-  const [to, setTo] = useState(def.to);
-  const [applied, setApplied] = useState({ from: def.from, to: def.to });
+  const today = todayLocal();
+  const [from, setFrom] = useState(today);
+  const [to, setTo] = useState(today);
+  const [applied, setApplied] = useState({ from: today, to: today });
+  const [source, setSource] = useState<UsageSource>('ombordan');
+
+  const invalidRange = from > to;
 
   const url = `/api/production-orders/raw-materials-usage?from=${applied.from}&to=${applied.to}`;
   const { data, isLoading, error } = useApiQuery<UsageRow[]>(url);
 
-  const rows = data ?? [];
+  const allRows = data ?? [];
+  const hasSemi = allRows.some((r) => r.source === 'sexdan');
+  const rows = allRows.filter((r) => (r.source ?? 'ombordan') === source);
   const grandQtyKnown = rows.every((r) => r.unit === rows[0]?.unit);
   const grandCost = rows.reduce((s, r) => s + (r.total_cost ?? 0), 0);
   const hasAnyCost = rows.some((r) => r.total_cost !== null);
+  const period =
+    applied.from === applied.to
+      ? fmtDate(applied.from)
+      : `${fmtDate(applied.from)} — ${fmtDate(applied.to)}`;
 
   function handlePrint() {
     const win = window.open('', '_blank', 'width=900,height=700');
@@ -60,7 +81,7 @@ export function RawMaterialsUsagePage() {
       )
       .join('');
     win.document.write(`<!doctype html><html lang="uz"><head><meta charset="utf-8">
-      <title>Xomashyo iste'moli — ${applied.from} … ${applied.to}</title>
+      <title>Xomashyo iste'moli — ${period}</title>
       <style>
         *{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;}
         body{margin:24px;color:#111;}
@@ -73,12 +94,12 @@ export function RawMaterialsUsagePage() {
         tfoot td{font-weight:bold;background:#fafafa;}
         @media print{body{margin:0;}}
       </style></head><body>
-      <h1>Eng ko'p ishlatilgan xomashyolar</h1>
-      <p class="sub">Davr: ${applied.from} — ${applied.to} · Jami ${rows.length} xil xomashyo</p>
+      <h1>Xomashyo iste'moli — ${SOURCE_LABELS[source]}</h1>
+      <p class="sub">Sana: ${period} · Jami ${rows.length} xil</p>
       <table>
         <thead><tr>
-          <th>#</th><th>Xomashyo nomi</th><th class="r">Ishlatilgan miqdor</th>
-          <th>O'lchov</th><th class="r">Buyurtmalar soni</th><th class="r">Summa</th>
+          <th>#</th><th>Nomi</th><th class="r">Berilgan miqdor</th>
+          <th>O'lchov</th><th class="r">Zayavkalar soni</th><th class="r">Summa</th>
         </tr></thead>
         <tbody>${body}</tbody>
         <tfoot><tr>
@@ -95,15 +116,16 @@ export function RawMaterialsUsagePage() {
   return (
     <div className="mx-auto max-w-5xl space-y-5">
       <PageHeader
-        title="Eng ko'p ishlatilgan xomashyolar"
-        description="Ishlab chiqarishga berish tarixi bo'yicha xomashyo iste'moli."
+        title="Xomashyo iste'moli"
+        description="Tanlangan kunlarda ishlab chiqarishga berilgan xomashyo (Xomashyo berish bo'yicha)."
       />
 
       {/* Filters */}
       <div className="flex flex-wrap items-end gap-3 rounded-xl border border-border bg-card p-4">
         <div className="flex flex-col gap-1">
-          <label className="text-xs text-muted-foreground">Dan</label>
+          <label htmlFor="usage-from" className="text-xs text-muted-foreground">Dan</label>
           <input
+            id="usage-from"
             type="date"
             value={from}
             onChange={(e) => setFrom(e.target.value)}
@@ -111,15 +133,16 @@ export function RawMaterialsUsagePage() {
           />
         </div>
         <div className="flex flex-col gap-1">
-          <label className="text-xs text-muted-foreground">Gacha</label>
+          <label htmlFor="usage-to" className="text-xs text-muted-foreground">Gacha</label>
           <input
+            id="usage-to"
             type="date"
             value={to}
             onChange={(e) => setTo(e.target.value)}
             className="rounded-md border border-border bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
           />
         </div>
-        <Button onClick={() => setApplied({ from, to })} disabled={isLoading}>
+        <Button onClick={() => setApplied({ from, to })} disabled={isLoading || invalidRange}>
           {isLoading ? <Loader2 className="size-4 animate-spin" /> : "Ko'rsatish"}
         </Button>
         <Button
@@ -131,7 +154,34 @@ export function RawMaterialsUsagePage() {
           <Printer className="size-4" />
           Chop etish
         </Button>
+        {invalidRange && (
+          <p className="basis-full text-xs text-destructive">
+            "Dan" sanasi "Gacha" sanasidan keyin bo'lmasligi kerak.
+          </p>
+        )}
       </div>
+
+      {/* Source tabs — only when semi hand-overs exist in the period */}
+      {hasSemi && (
+        <div role="tablist" className="flex flex-wrap gap-2">
+          {(Object.keys(SOURCE_LABELS) as UsageSource[]).map((s) => (
+            <button
+              key={s}
+              type="button"
+              role="tab"
+              aria-selected={source === s}
+              onClick={() => setSource(s)}
+              className={`rounded-full border px-4 py-1.5 text-sm transition-colors ${
+                source === s
+                  ? 'border-primary bg-primary text-primary-foreground'
+                  : 'border-border bg-card text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {SOURCE_LABELS[s]}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Table */}
       {isLoading ? (
@@ -145,7 +195,7 @@ export function RawMaterialsUsagePage() {
       ) : rows.length === 0 ? (
         <div className="flex flex-col items-center gap-3 py-16 text-muted-foreground">
           <PackageSearch className="size-10 opacity-40" />
-          <p className="text-sm">Bu davr uchun ma'lumot topilmadi.</p>
+          <p className="text-sm">{period} uchun ishlab chiqarishga xomashyo berilmagan.</p>
         </div>
       ) : (
         <div className="overflow-x-auto rounded-xl border border-border">
@@ -153,17 +203,17 @@ export function RawMaterialsUsagePage() {
             <thead>
               <tr className="border-b border-border bg-muted/40 text-left text-xs text-muted-foreground">
                 <th className="px-4 py-2.5">#</th>
-                <th className="px-4 py-2.5">Xomashyo nomi</th>
-                <th className="px-4 py-2.5 text-right">Ishlatilgan miqdor</th>
+                <th className="px-4 py-2.5">Nomi</th>
+                <th className="px-4 py-2.5 text-right">Berilgan miqdor</th>
                 <th className="px-4 py-2.5 text-right">O'lchov</th>
-                <th className="px-4 py-2.5 text-right">Buyurtmalar soni</th>
+                <th className="px-4 py-2.5 text-right">Zayavkalar soni</th>
                 <th className="px-4 py-2.5 text-right">Summa</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((r, i) => (
                 <tr
-                  key={r.product_id}
+                  key={`${r.product_id}:${r.source ?? 'ombordan'}`}
                   className="border-b border-border last:border-0 hover:bg-muted/30 transition-colors"
                 >
                   <td className="px-4 py-2.5 text-muted-foreground">{i + 1}</td>
@@ -190,7 +240,7 @@ export function RawMaterialsUsagePage() {
             <tfoot>
               <tr className="border-t border-border bg-muted/20 text-xs font-medium text-muted-foreground">
                 <td colSpan={2} className="px-4 py-2">
-                  Jami {rows.length} xil xomashyo
+                  Jami {rows.length} xil · {period}
                 </td>
                 <td className="px-4 py-2 text-right tabular-nums">
                   {grandQtyKnown && rows.length > 0

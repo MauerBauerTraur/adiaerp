@@ -768,10 +768,18 @@ productionOrdersRouter.get(
 );
 
 // GET /api/production-orders/raw-materials-usage?from=YYYY-MM-DD&to=YYYY-MM-DD
-// Aggregated raw-material consumption from stock_movements (reason='production_input').
-// This is the PERSISTENT record of what production actually consumed, so the date
-// filter works for any historical day — unlike production_dispatches, which is
-// deleted together with its production order and therefore loses history.
+// "Xomashyo iste'moli": what was actually GIVEN to production on those days —
+// the input lines of production_dispatches that were handed out (dispatched
+// or received), dated by dispatched_at in Asia/Tashkent. It deliberately does
+// not read the BOM-computed production_input movements: those are written
+// when an order is finished, stayed behind when an order was deleted, and
+// did not match what the warehouse actually issued. A deleted order's
+// dispatch lines are deleted with it (ON DELETE CASCADE), so a cancelled
+// mistake drops out of the report too.
+//
+// `source` separates raw materials issued by the warehouse ('ombordan') from
+// semi-finished goods handed over by another sex ('sexdan'); adding the two
+// would count a semi's raw materials twice.
 productionOrdersRouter.get(
   '/raw-materials-usage',
   authenticate,
@@ -783,29 +791,33 @@ productionOrdersRouter.get(
 
     if (fromRaw && !datePattern.test(fromRaw)) throw AppError.validation('"from" must be YYYY-MM-DD.');
     if (toRaw && !datePattern.test(toRaw)) throw AppError.validation('"to" must be YYYY-MM-DD.');
+    if (fromRaw && toRaw && fromRaw > toRaw) {
+      throw AppError.validation("Boshlanish sanasi tugash sanasidan keyin bo'lishi mumkin emas.");
+    }
 
-    // Raw materials plus in-house semi-finished inputs (крем каймак and the
-    // like) — both are consumed by production and belong in this report.
-    // production_input rows for Г/П / finished goods are the output side and are
-    // excluded by the type filter.
-    const conditions: string[] = [`m.reason = 'production_input'`, `p.type IN ('raw', 'semi')`];
+    // Inputs only: the order's own product is its output going to the
+    // warehouse, not something production consumed.
+    const conditions: string[] = [
+      `pd.status IN ('dispatched', 'received')`,
+      `pd.dispatched_at IS NOT NULL`,
+      `pd.product_id <> po.product_id`,
+    ];
     const params: string[] = [];
 
     if (fromRaw) {
       params.push(fromRaw);
-      conditions.push(`m.created_at::date >= $${params.length}`);
+      conditions.push(`(pd.dispatched_at AT TIME ZONE 'Asia/Tashkent')::date >= $${params.length}`);
     }
     if (toRaw) {
       params.push(toRaw);
-      conditions.push(`m.created_at::date <= $${params.length}`);
+      conditions.push(`(pd.dispatched_at AT TIME ZONE 'Asia/Tashkent')::date <= $${params.length}`);
     }
-
-    const where = `WHERE ${conditions.join(' AND ')}`;
 
     type UsageRow = {
       product_id: string;
       product_name: string;
       unit: string;
+      source: 'ombordan' | 'sexdan';
       total_qty: string;
       order_count: string;
       total_cost: string | null;
@@ -813,21 +825,24 @@ productionOrdersRouter.get(
 
     const { rows } = await query<UsageRow>(
       `SELECT
-         m.product_id::text,
+         pd.product_id::text,
          p.name AS product_name,
          p.unit AS unit,
-         SUM(m.qty)::text AS total_qty,
-         COUNT(DISTINCT m.production_order_id)::text AS order_count,
-         -- Summa = consumed qty × current cost_price (so'm). NULL when the
+         CASE WHEN fl.id IS NULL OR fl.type = 'raw_warehouse' THEN 'ombordan' ELSE 'sexdan' END AS source,
+         SUM(pd.qty_needed)::text AS total_qty,
+         COUNT(DISTINCT pd.production_order_id)::text AS order_count,
+         -- Summa = given qty × current cost_price (so'm). NULL when the
          -- product has no cost yet, so the UI can show "—" instead of 0.
          CASE WHEN p.cost_price IS NULL THEN NULL
-              ELSE ROUND(SUM(m.qty) * p.cost_price, 2)::text
+              ELSE ROUND(SUM(pd.qty_needed) * p.cost_price, 2)::text
          END AS total_cost
-       FROM stock_movements m
-       JOIN products p ON p.id = m.product_id
-       ${where}
-       GROUP BY m.product_id, p.name, p.unit, p.cost_price
-       ORDER BY SUM(m.qty) DESC`,
+       FROM production_dispatches pd
+       JOIN production_orders po ON po.id = pd.production_order_id
+       JOIN products p ON p.id = pd.product_id
+       LEFT JOIN locations fl ON fl.id = pd.from_location_id
+       WHERE ${conditions.join(' AND ')}
+       GROUP BY pd.product_id, p.name, p.unit, p.cost_price, 4
+       ORDER BY SUM(pd.qty_needed) DESC`,
       params,
     );
 
@@ -836,6 +851,7 @@ productionOrdersRouter.get(
         product_id: Number(r.product_id),
         product_name: r.product_name,
         unit: r.unit,
+        source: r.source,
         total_qty: Number(r.total_qty),
         order_count: Number(r.order_count),
         total_cost: r.total_cost === null ? null : Number(r.total_cost),
