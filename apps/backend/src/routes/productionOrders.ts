@@ -196,18 +196,24 @@ productionOrdersRouter.get(
       params.push(productIdParam);
       conditions.push(`po.product_id = $${params.length}`);
     }
+    // The day an order was given is the Tashkent calendar day: an order made
+    // at 00:43 local time is dated that day, not the previous UTC day.
+    const createdDay = `(po.created_at AT TIME ZONE 'Asia/Tashkent')::date`;
     if (fromDateRaw !== undefined && toDateRaw !== undefined) {
+      if (fromDateRaw > toDateRaw) {
+        throw AppError.validation("Boshlanish sanasi tugash sanasidan keyin bo'lishi mumkin emas.");
+      }
       params.push(fromDateRaw);
       const fromIdx = params.length;
       params.push(toDateRaw);
       const toIdx = params.length;
-      conditions.push(`po.created_at::date BETWEEN $${fromIdx} AND $${toIdx}`);
+      conditions.push(`${createdDay} BETWEEN $${fromIdx} AND $${toIdx}`);
     } else if (fromDateRaw !== undefined) {
       params.push(fromDateRaw);
-      conditions.push(`po.created_at::date >= $${params.length}`);
+      conditions.push(`${createdDay} >= $${params.length}`);
     } else if (toDateRaw !== undefined) {
       params.push(toDateRaw);
-      conditions.push(`po.created_at::date <= $${params.length}`);
+      conditions.push(`${createdDay} <= $${params.length}`);
     }
     if (!isSuperAdmin(principal) && principal.role !== 'ai_assistant') {
       if (principal.locationId === null) {

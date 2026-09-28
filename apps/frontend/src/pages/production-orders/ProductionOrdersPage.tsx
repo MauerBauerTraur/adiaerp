@@ -48,6 +48,30 @@ function isOverdue(deadline: string | null | undefined, status: string) {
   return deadline < new Date().toISOString().slice(0, 10);
 }
 
+/** YYYY-MM-DD in the viewer's local calendar (toISOString would give the UTC day). */
+function localIsoDate(d: Date = new Date()): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function shiftDays(iso: string, days: number): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  return localIsoDate(new Date(y!, m! - 1, d! + days));
+}
+
+/** 2026-09-28 (or an ISO timestamp) -> 28.09.2026 */
+function fmtDay(iso: string): string {
+  return iso.slice(0, 10).split('-').reverse().join('.');
+}
+
+/** created_at -> "28.09.2026 14:35" in local time. */
+function fmtCreated(ts: string): string {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return '—';
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${fmtDay(localIsoDate(d))} ${hh}:${mm}`;
+}
+
 // ---------------------------------------------------------------------------
 // PipelineStat
 // ---------------------------------------------------------------------------
@@ -493,8 +517,14 @@ export function ProductionOrdersPage() {
   const urlStatus = searchParams.get('status') as ProductionOrderStatus | null;
   const urlLocationId = searchParams.get('location_id');
   const urlOverdue = searchParams.get('overdue') === '1';
-  const urlFrom = searchParams.get('date_from') ?? '';
-  const urlTo = searchParams.get('date_to') ?? '';
+  const todayLocal = localIsoDate();
+  // Opened plainly (not from a dashboard link carrying its own filters): show
+  // today's orders — the daily question is "what did I order today".
+  const openedPlain =
+    !fromDashboard && !urlStatus && !urlLocationId && !urlOverdue &&
+    !searchParams.has('date_from') && !searchParams.has('date_to');
+  const urlFrom = searchParams.get('date_from') ?? (openedPlain ? todayLocal : '');
+  const urlTo = searchParams.get('date_to') ?? (openedPlain ? todayLocal : '');
 
   const { notify } = useToast();
   const [status, setStatus] = useState<ProductionOrderStatus | ''>(urlStatus ?? '');
@@ -535,6 +565,13 @@ export function ProductionOrdersPage() {
     setShowOverdueOnly(draftShowOverdue);
     setFilterOpen(false);
   }
+  /** Date bar quick picks — applied at once, and kept in sync with the sheet. */
+  function setRange(from: string, to: string) {
+    setDateFrom(from); setDraftDateFrom(from);
+    setDateTo(to); setDraftDateTo(to);
+  }
+  const invalidRange = dateFrom !== '' && dateTo !== '' && dateFrom > dateTo;
+
   function clearFilter() {
     setDraftStatus(''); setStatus('');
     setDraftSelectedSexId(null); setSelectedSexId(null);
@@ -561,7 +598,7 @@ export function ProductionOrdersPage() {
     if (dateTo) params.set('to_date', dateTo);
     return `/api/production-orders${params.toString() ? '?' + params.toString() : ''}`;
   })();
-  const { data, isLoading, error, refetch } = useApiQuery<ProductionOrder[]>(path);
+  const { data, isLoading, error, refetch } = useApiQuery<ProductionOrder[]>(invalidRange ? null : path);
 
   const products = useApiQuery<Product[]>('/api/products');
   const locations = useApiQuery<Location[]>(canCreate ? '/api/locations' : null);
@@ -663,6 +700,34 @@ export function ProductionOrdersPage() {
   // Only top-level orders in the table (sub-orders visible on detail page)
   const topLevelRows = filteredRows.filter((r) => r.parent_production_order_id == null);
 
+  // Group the table by the local day the order was given (rows arrive newest
+  // first, so the groups do too). Headers show only when more than one day.
+  const dayGroups = useMemo(() => {
+    const groups: { day: string; orders: ProductionOrder[] }[] = [];
+    for (const r of topLevelRows) {
+      const day = localIsoDate(new Date(r.created_at));
+      const last = groups[groups.length - 1];
+      if (last !== undefined && last.day === day) last.orders.push(r);
+      else groups.push({ day, orders: [r] });
+    }
+    return groups;
+  }, [topLevelRows]);
+
+  const periodLabel =
+    dateFrom === '' && dateTo === ''
+      ? 'Barcha sanalar'
+      : dateFrom === dateTo
+        ? fmtDay(dateFrom)
+        : `${dateFrom ? fmtDay(dateFrom) : '…'} — ${dateTo ? fmtDay(dateTo) : '…'}`;
+  const yesterday = shiftDays(todayLocal, -1);
+  const weekAgo = shiftDays(todayLocal, -6);
+  const quickRanges: { label: string; from: string; to: string }[] = [
+    { label: 'Bugun', from: todayLocal, to: todayLocal },
+    { label: 'Kecha', from: yesterday, to: yesterday },
+    { label: '7 kun', from: weekAgo, to: todayLocal },
+    { label: 'Hammasi', from: '', to: '' },
+  ];
+
   // Sub-order count per parent (for the table badge)
   const subCountMap = useMemo(() => {
     const m = new Map<number, number>();
@@ -757,7 +822,7 @@ export function ProductionOrdersPage() {
       {/* Filter bar */}
       <div className="flex items-center justify-between rounded-xl border border-border/60 bg-card/40 px-4 py-2.5 gap-3">
         <span className="text-sm text-muted-foreground shrink-0">
-          {topLevelRows.length} ta zayafka
+          <span className="font-medium text-foreground">{periodLabel}:</span> {topLevelRows.length} ta zayafka
           {filterActiveCount > 0 && <span className="ml-2 text-xs text-primary">{filterActiveCount} ta filter faol</span>}
         </span>
         <div className="flex items-center gap-2 ml-auto">
@@ -787,6 +852,50 @@ export function ProductionOrdersPage() {
           </div>
           <FilterTrigger onClick={openFilter} activeCount={filterActiveCount} />
         </div>
+      </div>
+
+      {/* Date bar — which day's orders are listed, changed in one click */}
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/60 bg-card/40 px-4 py-2.5">
+        <span className="text-xs font-medium text-muted-foreground">Berilgan sana:</span>
+        <input
+          type="date"
+          aria-label="Sanadan"
+          value={dateFrom}
+          onChange={(e) => setRange(e.target.value, dateTo)}
+          className="h-8 rounded-lg border border-border bg-background px-2 text-sm"
+        />
+        <span className="text-xs text-muted-foreground">—</span>
+        <input
+          type="date"
+          aria-label="Sanagacha"
+          value={dateTo}
+          onChange={(e) => setRange(dateFrom, e.target.value)}
+          className="h-8 rounded-lg border border-border bg-background px-2 text-sm"
+        />
+        <div className="flex flex-wrap gap-1.5">
+          {quickRanges.map((q) => {
+            const active = dateFrom === q.from && dateTo === q.to;
+            return (
+              <button
+                key={q.label}
+                type="button"
+                onClick={() => setRange(q.from, q.to)}
+                className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                  active
+                    ? 'bg-primary text-primary-foreground'
+                    : 'bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground'
+                }`}
+              >
+                {q.label}
+              </button>
+            );
+          })}
+        </div>
+        {invalidRange && (
+          <p className="basis-full text-xs text-destructive">
+            Boshlanish sanasi tugash sanasidan keyin bo'lmasligi kerak.
+          </p>
+        )}
       </div>
 
       <FilterSheet
@@ -911,13 +1020,14 @@ export function ProductionOrdersPage() {
       {isLoading && <LoadingState />}
       {!isLoading && error && <ErrorState message={error} onRetry={refetch} />}
 
-      {!isLoading && !error && topLevelRows.length === 0 && (
-        <EmptyState message="Zayafkalar topilmadi." />
+      {!isLoading && !error && !invalidRange && topLevelRows.length === 0 && (
+        <EmptyState message={`${periodLabel} uchun zayafka topilmadi.`} />
       )}
 
       {!isLoading && !error && topLevelRows.length > 0 && (
         <>
-          <PipelineStat orders={filteredRows} />
+          {/* Same set as the "N ta zayafka" count — sub-orders are part of their parent. */}
+          <PipelineStat orders={topLevelRows} />
 
           {/* Matrix view */}
           {viewMode === 'matrix' && (
@@ -936,12 +1046,24 @@ export function ProductionOrdersPage() {
                     <th className="px-4 py-3 font-medium text-right">Miqdor</th>
                     <th className="px-4 py-3 font-medium">Bo&apos;g&apos;in</th>
                     <th className="px-4 py-3 font-medium">Holat</th>
+                    <th className="px-4 py-3 font-medium">Berilgan</th>
                     <th className="px-4 py-3 font-medium">Muddat</th>
                     <th className="px-4 py-3 font-medium text-right">Amallar</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-border/30">
-                  {topLevelRows.map((order) => {
+                {dayGroups.map((group) => (
+                <tbody key={group.day} className="divide-y divide-border/30">
+                  {dayGroups.length > 1 && (
+                    <tr className="bg-muted/40">
+                      <td colSpan={8} className="px-4 py-2 text-xs font-semibold text-foreground">
+                        {fmtDay(group.day)}
+                        <span className="ml-2 font-normal text-muted-foreground">
+                          {group.orders.length} ta zayafka
+                        </span>
+                      </td>
+                    </tr>
+                  )}
+                  {group.orders.map((order) => {
                     const unit = productById.get(order.product_id)?.unit ?? '';
                     const overdue = isOverdue(order.deadline, order.status);
                     const dotClass = STATUS_DOT[order.status] ?? 'bg-muted';
@@ -987,6 +1109,9 @@ export function ProductionOrdersPage() {
                             </span>
                           </span>
                         </td>
+                        <td className="px-4 py-3 text-xs whitespace-nowrap text-muted-foreground tabular-nums">
+                          {fmtCreated(order.created_at)}
+                        </td>
                         <td
                           className={`px-4 py-3 text-xs whitespace-nowrap ${
                             overdue ? 'text-red-500 dark:text-red-400 font-semibold' : 'text-muted-foreground'
@@ -995,7 +1120,7 @@ export function ProductionOrdersPage() {
                           {order.deadline ? (
                             <>
                               {overdue && '⚠ '}
-                              {order.deadline}
+                              {fmtDay(order.deadline)}
                             </>
                           ) : (
                             <span className="text-muted-foreground/40">—</span>
@@ -1082,6 +1207,7 @@ export function ProductionOrdersPage() {
                     );
                   })}
                 </tbody>
+                ))}
               </table>
             </div>
           </div>
