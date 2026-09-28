@@ -42,6 +42,7 @@ import {
 import { listOpenYieldDebts } from '../services/yieldDebt.js';
 import { advance } from '../services/replenishment.js';
 import { applyMovement } from '../services/stockMovement.js';
+import { isKaymakProductName } from '../lib/productCategory.js';
 import {
   NOT_DISPATCHED_MESSAGE,
   ensureDispatchMovement,
@@ -1718,6 +1719,10 @@ productionOrdersRouter.post(
 
     // Auto-create sub-orders (recursively) for semi-finished components.
     const subOrders: ProductionOrderRow[] = [];
+    // Krem kaymak sub-orders wait for the kaymokchi's "Berdim" on the Krem
+    // kaymokchi screen instead of being auto-completed below — otherwise the
+    // screen shows everything as already handed over the moment it is ordered.
+    const awaitingHandOver = new Set<number>();
     const stockNotes: { product_id: number; product_name: string; available: number; needed: number }[] = [];
 
     // Global zagatovka location fallback (used when product has no production_location_id).
@@ -1848,6 +1853,7 @@ productionOrdersRouter.post(
           return subRow;
         });
         subOrders.push(subOrder);
+        if (isKaymakProductName(node.component_name)) awaitingHandOver.add(Number(subOrder.id));
 
         // Re-expand BOM for the sub-order at the actual deficit qty.
         const subBom = await expandBom(node.component_product_id, subQty, 0);
@@ -1886,6 +1892,7 @@ productionOrdersRouter.post(
     let finalOrder: ProductionOrderRow = inserted;
     try {
       for (const sub of [...subOrders].reverse()) {
+        if (awaitingHandOver.has(Number(sub.id))) continue;
         await withTransaction(async (tx) => {
           await finishProductionOrder(sub.id, principal.userId, tx);
         });

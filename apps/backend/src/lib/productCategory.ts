@@ -79,3 +79,14 @@ export function deriveCategory(name: string, type: ProductType): ProductCategory
   if (eff === 'semi') return 'semi';
   return 'finished';
 }
+
+/**
+ * The krem kaymak family ("крем каймак", "крем каймок (варёное)", …), made by
+ * the kaymokchi and handed over on the Krem kaymokchi screen. Same needles as
+ * the frontend's isKaymakProduct (KremKaymokchiPage.tsx), so both sides agree
+ * on which products that screen owns.
+ */
+export function isKaymakProductName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return ['каймак', 'каймок', 'kaymak', 'kaymok'].some((needle) => lower.includes(needle));
+}

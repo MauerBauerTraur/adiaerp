@@ -21,7 +21,28 @@ type DeptProduct = {
   /** Which zayavka (parent order) this z/g product belongs to — a dept can
    * pool products from several zayavkas (see DeptGroup below). */
   parentId: number;
+  /** The product the cream goes into, so the kaymokchi knows what it is for. */
+  parentName: string;
+  parentQty: number;
+  parentUnit: string;
 };
+
+/** Cream to hand over, summed per product (a dept may need several kaymak kinds). */
+function sumByProduct(products: DeptProduct[]): { name: string; unit: string; qty: number }[] {
+  const m = new Map<string, { name: string; unit: string; qty: number }>();
+  for (const p of products) {
+    const key = `${p.productName}|${p.productUnit}`;
+    const cur = m.get(key);
+    if (cur) cur.qty += p.qty;
+    else m.set(key, { name: p.productName, unit: p.productUnit, qty: p.qty });
+  }
+  return [...m.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** YYYY-MM-DD in the viewer's local calendar (toISOString would give the UTC day). */
+function localIsoDate(d: Date = new Date()): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
 
 // Grouped by actual department (location), NOT by zayavka — a department
 // can have several open zayavkas going at once (e.g. two orders both
@@ -59,24 +80,33 @@ function openCreamPrint(groups: DeptGroup[], dateStr: string) {
   const tdSR = tdS + ';text-align:right;font-variant-numeric:tabular-nums';
   const tdSC = tdS + ';text-align:center';
 
+  const esc = (s: string) =>
+    s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string));
   const sections = groups.map(dept => {
-    const rows = dept.products
+    const rows = [...dept.products]
       .sort((a, b) => a.productName.localeCompare(b.productName))
       .map(p => `<tr>
-        <td style="${tdS}">${p.productName}</td>
-        <td style="${tdSR}">${fmtQty(p.qty)} ${p.productUnit}</td>
+        <td style="${tdS}">${esc(p.productName)}</td>
+        <td style="${tdS};color:#555">${esc(p.parentName)} (${fmtQty(p.parentQty)} ${esc(p.parentUnit)})</td>
+        <td style="${tdSR}">${fmtQty(p.qty)} ${esc(p.productUnit)}</td>
         <td style="${tdSC}">&#9633;</td>
       </tr>`).join('');
+    const totals = sumByProduct(dept.products)
+      .map(t => `${esc(t.name)}: <b>${fmtQty(t.qty)} ${esc(t.unit)}</b>`)
+      .join(' · ');
     return `<div style="page-break-inside:avoid">
-      <h3 style="margin:16px 0 6px;font-size:13px;font-weight:700;border-bottom:2px solid #333;padding-bottom:4px">${dept.deptName}</h3>
+      <h3 style="margin:16px 0 2px;font-size:13px;font-weight:700;border-bottom:2px solid #333;padding-bottom:4px">${esc(dept.deptName)}</h3>
+      <p style="margin:4px 0 6px;font-size:12px;color:#111">Jami berish kerak — ${totals}</p>
       <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px">
         <thead><tr>
           <th style="${thS}">Krem mahsulot</th>
+          <th style="${thS}">Qaysi mahsulot uchun</th>
           <th style="${thSR}">Miqdor</th>
           <th style="${thSC}">Berildi</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
+      <p style="margin:6px 0 0;font-size:11px;color:#555">Berdi (kaymokchi): ______________ &nbsp;&nbsp; Qabul qildi: ______________</p>
     </div>`;
   }).join('');
 
@@ -171,6 +201,9 @@ function ProductCard({
       <div className="flex items-center justify-between px-4 py-3">
         <div>
           <p className="text-sm font-semibold">{prod.productName}</p>
+          <p className="text-xs text-muted-foreground">
+            → {prod.parentName} ({fmtQty(prod.parentQty)} {prod.parentUnit}) uchun
+          </p>
           <button
             type="button"
             onClick={() => setShowIngredients((v) => !v)}
@@ -282,6 +315,8 @@ function DeptDetail({
 
   const pendingProducts = group.products.filter((p) => p.status !== 'done');
   const doneCount = group.products.length - pendingProducts.length;
+  const toGive = sumByProduct(group.products);
+  const stillToGive = sumByProduct(pendingProducts);
 
   return (
     <div className="space-y-3">
@@ -295,7 +330,7 @@ function DeptDetail({
         <div>
           <p className="font-bold text-white text-base">{group.deptName}</p>
           <p className="text-xs text-zinc-400 mt-0.5">
-            {doneCount}/{group.products.length} ta mahsulot tayyor
+            {doneCount}/{group.products.length} ta berildi
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -307,7 +342,7 @@ function DeptDetail({
               className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-60 transition-colors"
             >
               {busyIds.has(-1) && <Loader2 className="size-3 animate-spin" />}
-              Hammasi tayyor ({pendingProducts.length})
+              Hammasini berdim ({pendingProducts.length})
             </button>
           )}
           <div className="text-right">
@@ -318,6 +353,30 @@ function DeptDetail({
               {group.parentIds.map((id) => `#${id}`).join(', ')}
             </p>
           </div>
+        </div>
+      </div>
+
+      {/* What the kaymokchi owes this otdel, in one line per cream kind */}
+      <div className="rounded-xl border border-primary/30 bg-primary/5 px-4 py-3">
+        <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+          {group.deptName}ga berish kerak
+        </p>
+        <div className="space-y-1">
+          {toGive.map((t) => {
+            const left = stillToGive.find((s) => s.name === t.name && s.unit === t.unit)?.qty ?? 0;
+            return (
+              <div key={`${t.name}|${t.unit}`} className="flex items-center justify-between gap-3">
+                <span className="text-sm font-medium">{t.name}</span>
+                <span className="tabular-nums text-sm">
+                  <span className="font-bold">{fmtQty(t.qty)}</span>
+                  <span className="ml-1 text-xs text-muted-foreground">{t.unit}</span>
+                  <span className={`ml-3 text-xs ${left > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                    {left > 0 ? `qoldi ${fmtQty(left)} ${t.unit}` : '✓ hammasi berildi'}
+                  </span>
+                </span>
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -378,15 +437,17 @@ export function isKaymakProduct(name: string): boolean {
 }
 
 export function KremKaymokchiPage() {
-  const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const todayLocal = useMemo(() => localIsoDate(), []);
+  const [day, setDay] = useState(todayLocal);
   const dateLabel = useMemo(() => {
-    const d = new Date();
-    return `${d.getDate()}-${d.toLocaleString('uz-UZ', { month: 'long' })}`;
-  }, []);
+    const [y, m, d] = day.split('-').map(Number);
+    const date = new Date(y!, m! - 1, d!);
+    return `${date.getDate()}-${date.toLocaleString('uz-UZ', { month: 'long' })}`;
+  }, [day]);
 
   const { notify } = useToast();
   const { data: orders, isLoading, error, refetch } = useApiQuery<ProductionOrder[]>(
-    `/api/production-orders?from_date=${today}&to_date=${today}`,
+    `/api/production-orders?from_date=${day}&to_date=${day}`,
   );
 
   const parentById = useMemo(() => {
@@ -436,6 +497,9 @@ export function KremKaymokchiPage() {
         qty: sub.qty,
         status: sub.status,
         parentId: parent.id,
+        parentName: parent.product_name,
+        parentQty: parent.qty,
+        parentUnit: getUnit(parent),
       });
     }
 
@@ -458,7 +522,7 @@ export function KremKaymokchiPage() {
         method: 'PATCH',
         body: { status: 'done' },
       });
-      notify('success', 'Mahsulot tayyor deb belgilandi.');
+      notify('success', 'Berildi deb belgilandi.');
       refetch();
     } catch (err: unknown) {
       notify('error', err instanceof ApiError ? err.message : "Status o'zgartirib bo'lmadi.");
@@ -480,7 +544,7 @@ export function KremKaymokchiPage() {
         method: 'PATCH',
         body: { ids: subOrderIds },
       });
-      notify('success', `${subOrderIds.length} ta mahsulot tayyor deb belgilandi.`);
+      notify('success', `${subOrderIds.length} ta mahsulot berildi deb belgilandi.`);
       refetch();
     } catch (err: unknown) {
       notify('error', err instanceof ApiError ? err.message : "Bulk tayyor qilib bo'lmadi.");
@@ -506,7 +570,7 @@ export function KremKaymokchiPage() {
           deptGroups.length > 0 ? (
             <button
               type="button"
-              onClick={() => openCreamPrint(deptGroups, today)}
+              onClick={() => openCreamPrint(deptGroups, day)}
               className="flex items-center gap-1.5 rounded-lg border border-border/50 px-3 py-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
             >
               <Printer className="size-4" />
@@ -516,8 +580,30 @@ export function KremKaymokchiPage() {
         }
       />
 
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/50 bg-card/60 px-4 py-2.5">
+        <label htmlFor="kaymak-day" className="text-xs font-medium text-muted-foreground">Sana:</label>
+        <input
+          id="kaymak-day"
+          type="date"
+          value={day}
+          onChange={(e) => { if (e.target.value) setDay(e.target.value); }}
+          className="h-8 rounded-lg border border-border bg-background px-2 text-sm"
+        />
+        {day !== todayLocal && (
+          <button
+            type="button"
+            onClick={() => setDay(todayLocal)}
+            className="text-xs text-muted-foreground hover:text-foreground"
+          >
+            Bugun
+          </button>
+        )}
+      </div>
+
       {deptGroups.length === 0 ? (
-        <EmptyState message="Bugun uchun zagotovka buyurtmalari topilmadi." />
+        <EmptyState
+          message={day === todayLocal ? 'Bugun krem kaymak buyurtmalari yo\'q.' : `${dateLabel} uchun krem kaymak buyurtmalari yo'q.`}
+        />
       ) : (
         <>
           <div className="rounded-xl border border-border/30 bg-muted/20 px-4 py-2.5">
@@ -531,6 +617,9 @@ export function KremKaymokchiPage() {
             <div className="w-56 shrink-0 space-y-1">
               {deptGroups.map((group) => {
                 const isSelected = effectiveKey === group.key;
+                const given = group.products.filter((p) => p.status === 'done').length;
+                const allGiven = given === group.products.length;
+                const totals = sumByProduct(group.products);
                 return (
                   <button
                     key={group.key}
@@ -543,7 +632,7 @@ export function KremKaymokchiPage() {
                     }`}
                   >
                     <div className="flex items-start gap-2">
-                      <span className="size-2 shrink-0 rounded-full bg-emerald-400 mt-1.5" />
+                      <span className={`size-2 shrink-0 rounded-full mt-1.5 ${allGiven ? 'bg-emerald-400' : 'bg-amber-400'}`} />
                       <div className="flex-1 min-w-0">
                         <p
                           className={`text-sm truncate ${
@@ -553,7 +642,7 @@ export function KremKaymokchiPage() {
                           {group.deptName}
                         </p>
                         <p className="text-xs text-muted-foreground tabular-nums">
-                          {group.products.length} ta mahsulot
+                          {totals.map((t) => `${fmtQty(t.qty)} ${t.unit}`).join(' · ')} · {given}/{group.products.length} berildi
                         </p>
                       </div>
                     </div>
