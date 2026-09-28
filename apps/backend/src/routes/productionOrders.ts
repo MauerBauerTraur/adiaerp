@@ -43,6 +43,11 @@ import { listOpenYieldDebts } from '../services/yieldDebt.js';
 import { advance } from '../services/replenishment.js';
 import { applyMovement } from '../services/stockMovement.js';
 import {
+  NOT_DISPATCHED_MESSAGE,
+  ensureDispatchMovement,
+  receiveDispatch,
+} from '../services/productionDispatch.js';
+import {
   createNotification,
   createNotificationsForRecipients,
   getUsersByRole,
@@ -1019,41 +1024,23 @@ productionOrdersRouter.patch(
   asyncHandler(async (req, res) => {
     const dispatchId = parseIdParam(req.params.dispatch_id, 'dispatch_id');
     const principal = getPrincipal(req);
-    const { rows } = await query<{
-      id: number; production_order_id: number; product_id: number;
-      qty_needed: string; from_location_id: number | null; to_location_id: number | null;
-    }>(
-      `UPDATE production_dispatches
-       SET status = 'dispatched', dispatched_at = NOW(), dispatched_by = $2
-       WHERE id = $1 AND status = 'pending'
-       RETURNING *`,
-      [dispatchId, principal.userId],
-    );
-    if (!rows[0]) {
-      throw AppError.validation("Yozuv topilmadi yoki allaqachon 'berildi' deb belgilangan.");
-    }
-    const dispatch = rows[0];
-    let movementId: number | null = null;
-    const fromLoc = dispatch.from_location_id;
-    const toLoc = dispatch.to_location_id;
-    if (fromLoc !== null && toLoc !== null && fromLoc !== toLoc) {
-      const result = await applyMovement({
-        productId: Number(dispatch.product_id),
-        fromLocationId: Number(fromLoc),
-        toLocationId: Number(toLoc),
-        qty: Number(dispatch.qty_needed),
-        reason: 'transfer',
-        actorUserId: principal.userId,
-        productionOrderId: Number(dispatch.production_order_id),
-        allowNegative: true,
-      });
-      movementId = result.movementId;
-      await query(
-        `UPDATE production_dispatches SET movement_id = $2 WHERE id = $1`,
-        [dispatch.id, movementId],
+    // Status flip + stock movement in ONE transaction; the movement is applied
+    // only if no channel applied it yet (ADR-0019 §11.1 P1/P2).
+    const dispatched = await withTransaction(async (tx) => {
+      const { rows } = await tx.query<Record<string, unknown>>(
+        `UPDATE production_dispatches
+         SET status = 'dispatched', dispatched_at = NOW(), dispatched_by = $2
+         WHERE id = $1 AND status = 'pending'
+         RETURNING *`,
+        [dispatchId, principal.userId],
       );
-    }
-    res.status(200).json({ ...dispatch, movement_id: movementId });
+      if (!rows[0]) {
+        throw AppError.validation("Yozuv topilmadi yoki allaqachon 'berildi' deb belgilangan.");
+      }
+      const movementId = await ensureDispatchMovement(tx, dispatchId, principal.userId);
+      return { ...rows[0], movement_id: movementId };
+    });
+    res.status(200).json(dispatched);
   }),
 );
 
@@ -1066,58 +1053,10 @@ productionOrdersRouter.patch(
   asyncHandler(async (req, res) => {
     const dispatchId = parseIdParam(req.params.dispatch_id, 'dispatch_id');
     const principal = getPrincipal(req);
-
-    const { rows: dRows } = await query<{
-      id: number;
-      production_order_id: number;
-      product_id: number;
-      qty_needed: number;
-      status: string;
-      from_location_id: number | null;
-      to_location_id: number | null;
-      movement_id: number | null;
-    }>(
-      `SELECT id, production_order_id, product_id, qty_needed::float AS qty_needed,
-              status, from_location_id, to_location_id, movement_id
-       FROM production_dispatches WHERE id = $1`,
-      [dispatchId],
-    );
-    const dispatch = dRows[0];
-    if (!dispatch) throw AppError.notFound('Dispatch record not found.');
-    if (dispatch.status !== 'dispatched') {
-      throw AppError.validation("Faqat 'berildi' holatidagi yozuvni qabul qilish mumkin.");
-    }
-
-    // Apply the transfer movement here (production → warehouse). movement_id
-    // is null for normal output dispatches; non-null only for legacy records
-    // that had their movement applied at dispatch time.
-    let movementId: number | null = dispatch.movement_id;
-    if (movementId === null) {
-      const fromLoc = dispatch.from_location_id;
-      const toLoc = dispatch.to_location_id;
-      if (fromLoc !== null && toLoc !== null && fromLoc !== toLoc) {
-        const result = await applyMovement({
-          productId: Number(dispatch.product_id),
-          fromLocationId: Number(fromLoc),
-          toLocationId: Number(toLoc),
-          qty: Number(dispatch.qty_needed),
-          reason: 'transfer',
-          actorUserId: principal.userId,
-          productionOrderId: Number(dispatch.production_order_id),
-          allowNegative: true,
-        });
-        movementId = result.movementId;
-      }
-    }
-
-    const { rows } = await query(
-      `UPDATE production_dispatches
-       SET status = 'received', received_at = NOW(), received_by = $2, movement_id = $3
-       WHERE id = $1
-       RETURNING *`,
-      [dispatchId, principal.userId, movementId],
-    );
-    res.status(200).json(rows[0]);
+    // Lock, check 'dispatched', move stock only if no channel did yet (web
+    // dispatch, batch, Telegram) and never re-move a done order's output
+    // (ADR-0019 §11.1 P1/P2), flip to 'received' — one transaction.
+    res.status(200).json(await receiveDispatch(dispatchId, principal.userId));
   }),
 );
 
@@ -1169,29 +1108,14 @@ productionOrdersRouter.patch(
         [dateParam, principal.userId],
       ));
     }
-    // Apply stock movement for each dispatched item.
+    // Apply the stock movement for each dispatched item — exactly once per
+    // dispatch (a concurrent receive may already have applied it) and never
+    // for a not-yet-made output (ADR-0019 §11.1 P1/P2).
     for (const d of rows) {
-      const fromLoc = d.from_location_id;
-      const toLoc = d.to_location_id;
-      if (fromLoc !== null && toLoc !== null && fromLoc !== toLoc) {
-        try {
-          const result = await applyMovement({
-            productId: Number(d.product_id),
-            fromLocationId: Number(fromLoc),
-            toLocationId: Number(toLoc),
-            qty: Number(d.qty_needed),
-            reason: 'transfer',
-            actorUserId: principal.userId,
-            productionOrderId: Number(d.production_order_id),
-            allowNegative: true,
-          });
-          await query(
-            `UPDATE production_dispatches SET movement_id = $2 WHERE id = $1`,
-            [d.id, result.movementId],
-          );
-        } catch {
-          // Log but don't abort the batch; status is already 'dispatched'
-        }
+      try {
+        await withTransaction((tx) => ensureDispatchMovement(tx, Number(d.id), principal.userId));
+      } catch {
+        // Log but don't abort the batch; status is already 'dispatched'
       }
     }
     res.status(200).json({ dispatched: rows.length });
@@ -1292,32 +1216,15 @@ productionOrdersRouter.patch(
 
     let received = 0;
     for (const dispatch of itemRows) {
-      // Only apply movement if not already applied at dispatch time.
-      let movementId: number | null = dispatch.movement_id;
-      if (movementId === null) {
-        const fromLoc = dispatch.from_location_id;
-        const toLoc = dispatch.to_location_id;
-        if (fromLoc !== null && toLoc !== null && fromLoc !== toLoc) {
-          const result = await applyMovement({
-            productId: Number(dispatch.product_id),
-            fromLocationId: Number(fromLoc),
-            toLocationId: Number(toLoc),
-            qty: Number(dispatch.qty_needed),
-            reason: 'transfer',
-            actorUserId: principal.userId,
-            productionOrderId: Number(dispatch.production_order_id),
-            allowNegative: true,
-          });
-          movementId = result.movementId;
-        }
+      // Exactly-once receive (ADR-0019 §11.1 P1/P2). An item another channel
+      // received in the meantime is skipped, not moved twice.
+      try {
+        await receiveDispatch(Number(dispatch.id), principal.userId);
+        received++;
+      } catch (err) {
+        if (err instanceof AppError && err.message === NOT_DISPATCHED_MESSAGE) continue;
+        throw err;
       }
-      await query(
-        `UPDATE production_dispatches
-         SET status = 'received', received_at = NOW(), received_by = $2, movement_id = $3
-         WHERE id = $1`,
-        [dispatch.id, principal.userId, movementId],
-      );
-      received++;
     }
     res.status(200).json({ received });
   }),

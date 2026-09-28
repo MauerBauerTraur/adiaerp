@@ -23,6 +23,7 @@
  */
 import { query, withTransaction, type TxClient } from '../../db/index.js';
 import type { Role } from '../../auth/roles.js';
+import { AppError } from '../../errors/index.js';
 import { writeAudit, poolRunner } from '../../lib/audit.js';
 import {
   approvePurchaseOrder,
@@ -1307,28 +1308,18 @@ async function rcvDspCallback(
     return { kind: 'rbac', message: 'Bu material boshqa sex uchun' };
   }
 
-  let movementId: number | null = null;
-  if (d.from_location_id !== null && d.to_location_id !== null) {
-    const { applyMovement } = await import('../../services/stockMovement.js');
-    const result = await applyMovement({
-      productId: Number(d.product_id),
-      fromLocationId: Number(d.from_location_id),
-      toLocationId: Number(d.to_location_id),
-      qty: Number(d.qty_needed),
-      reason: 'transfer',
-      actorUserId: principal.userId,
-      productionOrderId: Number(d.production_order_id),
-      allowNegative: true,
-    });
-    movementId = result.movementId;
+  // The same exactly-once receive as the web (ADR-0019 §11.1 P1): the
+  // movement is applied only if no channel applied it yet — a web "Berildi"
+  // already moved the stock — and a done order's output is never re-moved.
+  const { receiveDispatch } = await import('../../services/productionDispatch.js');
+  let movementId: number | null;
+  try {
+    const row = await receiveDispatch(dispatchId, principal.userId);
+    movementId = row.movement_id === null || row.movement_id === undefined ? null : Number(row.movement_id);
+  } catch (err) {
+    if (err instanceof AppError) return { kind: 'invalid', message: err.message };
+    throw err;
   }
-
-  await query(
-    `UPDATE production_dispatches
-        SET status = 'received', received_at = NOW(), received_by = $2, movement_id = $3
-      WHERE id = $1`,
-    [dispatchId, principal.userId, movementId],
-  );
 
   await writeAudit(poolRunner, {
     actorUserId: principal.userId,
