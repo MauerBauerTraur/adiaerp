@@ -11,6 +11,7 @@ import {
   Printer,
   Send,
   Truck,
+  Users,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -23,6 +24,8 @@ import { apiRequest, ApiError } from '@/lib/api-client';
 import type { DailyDispatchResponse, ProductionDispatch } from '@/lib/types';
 import { fmtQty } from './BomTree';
 import { buildDestinationContext, buildDispatchMatrix, type DestinationContextData, type OrderInfo } from './dispatchContext';
+import { buildUstaSplit } from './ustaSplit';
+import { openUstaSplitPrint } from './ustaSplitPrint';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -784,6 +787,7 @@ function SexSection({
   orderById,
   onChanged,
   defaultOpen,
+  dateLabel,
 }: {
   group: DispatchGroup;
   isWarehouse: boolean;
@@ -792,6 +796,8 @@ function SexSection({
   orderById: Map<number, OrderInfo>;
   onChanged: () => void;
   defaultOpen?: boolean;
+  /** The page's date or date range, printed on the usta slips. */
+  dateLabel?: string;
 }) {
   const { notify } = useToast();
   const [busyItem, setBusyItem] = useState<number | null>(null);
@@ -955,6 +961,15 @@ function SexSection({
     if (w) { w.document.write(html); w.document.close(); }
   }
 
+  /** ADR-0019 Phase A: one slip per usta + the otdel matrix, print only. */
+  function openUstaPrint() {
+    const split = buildUstaSplit(group.items, orderById, group.locationId);
+    openUstaSplitPrint(split, {
+      otdelName: group.locationName,
+      dateLabel: dateLabel ?? new Date().toISOString().slice(0, 10),
+    });
+  }
+
   async function handleDispatch(ids: number[]) {
     if (ids.length === 0) return;
     if (ids.length === 1) {
@@ -1050,6 +1065,17 @@ function SexSection({
           className="shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground transition-colors"
         >
           <Printer className="size-3.5" />
+        </button>
+
+        {/* Per-usta slips + matrix (ADR-0019 Phase A) */}
+        <button
+          type="button"
+          onClick={openUstaPrint}
+          title="Har bir usta uchun alohida varaqa va ustalar matritsasi"
+          className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border/60 px-2.5 py-0.5 text-xs font-medium text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors"
+        >
+          <Users className="size-3.5" aria-hidden="true" />
+          Ustalar bo'yicha chop etish
         </button>
 
         {/* Bulk action or done indicator */}
@@ -1591,6 +1617,7 @@ export function WarehouseDispatchPage({ productTypeFilter }: { productTypeFilter
                 orderById={orderById}
                 onChanged={refetch}
                 defaultOpen={true}
+                dateLabel={dateFrom === dateTo ? dateFrom : `${dateFrom} — ${dateTo}`}
               />
             ) : (
               <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
