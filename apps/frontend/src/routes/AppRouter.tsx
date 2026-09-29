@@ -37,6 +37,7 @@ import { NakladnoyPage } from '@/pages/cashier/NakladnoyPage';
 import { PosterSuppliesPage } from '@/pages/poster-supplies/PosterSuppliesPage';
 import { ProfitReportPage } from '@/pages/reports/ProfitReportPage';
 import { StoreSalesReportPage } from '@/pages/reports/StoreSalesReportPage';
+import { ProductionDailyReportPage } from '@/pages/reports/ProductionDailyReportPage';
 import { StockReportPage } from '@/pages/stock/StockReportPage';
 import { TransferPage } from '@/pages/stock/TransferPage';
 import { ZagotovkaPage } from '@/pages/production-orders/ZagotovkaPage';
@@ -339,6 +340,14 @@ export function AppRouter() {
           element={
             <RoleRoute allow={['super_admin', 'pm']}>
               <StoreSalesReportPage />
+            </RoleRoute>
+          }
+        />
+        <Route
+          path="/hisobotlar/ishlab-chiqarish"
+          element={
+            <RoleRoute allow={['super_admin', 'pm']}>
+              <ProductionDailyReportPage />
             </RoleRoute>
           }
         />

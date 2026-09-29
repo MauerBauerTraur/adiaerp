@@ -43,6 +43,7 @@ import { listOpenYieldDebts } from '../services/yieldDebt.js';
 import { advance } from '../services/replenishment.js';
 import { applyMovement } from '../services/stockMovement.js';
 import { isKaymakProductName } from '../lib/productCategory.js';
+import { costingForProducts } from '../services/productCosting.js';
 import {
   NOT_DISPATCHED_MESSAGE,
   ensureDispatchMovement,
@@ -570,144 +571,14 @@ productionOrdersRouter.get(
       params,
     );
 
-    // ── Steps 2+3: JS name matching for sell_price and canonical recipe id ─────
-    // Two products can have visually identical names but differ in Cyrillic encoding
-    // (NFC vs NFD). SQL LOWER(TRIM(name)) = LOWER(TRIM(name)) fails in these cases.
-    // Fix: fetch all semi/finished products once, then match in JS with normalize('NFC').
-    const uniqueIds = [...new Set(baseRows.map((r) => r.product_id))];
-    const priceById = new Map<number, number | null>();
-    const canonMap = new Map<number, number>();
-    let metaById = new Map<number, { poster_ingredient_id: number | null; poster_product_id: number | null }>();
-
-    if (uniqueIds.length > 0) {
-      const { rows: allProducts } = await query<{
-        id: number;
-        name: string;
-        sell_price: number | null;
-        has_recipe: boolean;
-        has_poster_product_id: boolean;
-        poster_ingredient_id: number | null;
-        poster_product_id: number | null;
-      }>(
-        `SELECT p.id,
-                p.name,
-                p.sell_price::float AS sell_price,
-                EXISTS(SELECT 1 FROM recipes WHERE product_id = p.id) AS has_recipe,
-                (p.poster_product_id IS NOT NULL) AS has_poster_product_id,
-                p.poster_ingredient_id,
-                p.poster_product_id
-         FROM products p
-         WHERE p.type IN ('semi', 'finished', 'gp')`,
-      );
-
-      // Strip everything except Cyrillic/Latin letters and digits — handles
-      // different slash/paren/space encodings that fool SQL LOWER(TRIM()) matching.
-      const norm = (s: string) =>
-        s.normalize('NFC').toLowerCase().replace(/[^\p{L}\d]/gu, '');
-
-      type ProductEntry = {
-        id: number; sell_price: number | null; has_recipe: boolean;
-        has_poster_product_id: boolean;
-        poster_ingredient_id: number | null; poster_product_id: number | null;
-      };
-      // Lookup by aggressive-normalised name
-      const byName = new Map<string, ProductEntry[]>();
-      // Lookup by poster_ingredient_id (integer — 100% reliable)
-      const byIngId = new Map<number, ProductEntry[]>();
-
-      for (const p of allProducts) {
-        const key = norm(p.name);
-        if (!byName.has(key)) byName.set(key, []);
-        byName.get(key)!.push(p);
-        if (p.poster_ingredient_id != null) {
-          if (!byIngId.has(p.poster_ingredient_id)) byIngId.set(p.poster_ingredient_id, []);
-          byIngId.get(p.poster_ingredient_id)!.push(p);
-        }
-      }
-
-      // Also need poster IDs from production order products for the ingId lookup
-      const { rows: orderProductMeta } = await query<{
-        id: number; poster_ingredient_id: number | null; poster_product_id: number | null;
-      }>(
-        `SELECT id, poster_ingredient_id, poster_product_id FROM products WHERE id = ANY($1::int[])`,
-        [uniqueIds],
-      );
-      metaById = new Map(orderProductMeta.map(r => [Number(r.id), r]));
-
-      for (const row of baseRows) {
-        const meta = metaById.get(row.product_id);
-        const candidates: ProductEntry[] = [];
-
-        // Strategy A: aggressive name match (handles encoding/punctuation differences)
-        const byNameMatch = byName.get(norm(row.product_name)) ?? [];
-        byNameMatch.forEach(p => candidates.push(p));
-
-        // Strategy B: same poster_ingredient_id (integer — most reliable)
-        if (meta?.poster_ingredient_id != null) {
-          const byIng = byIngId.get(meta.poster_ingredient_id) ?? [];
-          byIng.forEach(p => { if (!candidates.includes(p)) candidates.push(p); });
-        }
-        // Strategy C: poster_product_id used as ingredient_id by partner
-        if (meta?.poster_product_id != null) {
-          const byIng2 = byIngId.get(meta.poster_product_id) ?? [];
-          byIng2.forEach(p => { if (!candidates.includes(p)) candidates.push(p); });
-        }
-
-        // sell_price: prefer partner with poster_product_id (menu dish version)
-        const withSell = candidates
-          .filter((p) => p.sell_price != null && p.sell_price > 0)
-          .sort((a, b) => Number(b.has_poster_product_id) - Number(a.has_poster_product_id));
-        priceById.set(row.product_id, withSell[0]?.sell_price ?? null);
-
-        // canonical_id: product with recipes; prefer poster_product_id version
-        const withRecipe = candidates
-          .filter((p) => p.has_recipe)
-          .sort((a, b) => Number(b.has_poster_product_id) - Number(a.has_poster_product_id));
-        if (withRecipe[0]) canonMap.set(row.product_id, withRecipe[0].id);
-      }
-    }
-
-    // Recursive BOM cost for canonical product IDs
-    const xomashyoMap = new Map<number, number>(); // canonical_id → cost_per_unit
-    const allCanonical = [...new Set([...canonMap.values()])];
-    if (allCanonical.length > 0) {
-      const { rows: bomRows } = await query<{ root_id: number; xomashyo_cost: number }>(
-        `WITH RECURSIVE bom AS (
-           SELECT r.product_id AS root_id,
-                  r.component_product_id AS comp_id,
-                  r.qty_per_unit::float AS eff_qty,
-                  1 AS depth
-           FROM recipes r
-           WHERE r.product_id = ANY($1::int[])
-           UNION ALL
-           SELECT b.root_id,
-                  r.component_product_id,
-                  b.eff_qty * r.qty_per_unit::float,
-                  b.depth + 1
-           FROM bom b
-           JOIN products comp ON comp.id = b.comp_id
-           JOIN recipes r ON r.product_id = b.comp_id
-           WHERE b.depth < 6
-             AND comp.type IN ('semi', 'finished', 'gp')
-         )
-         SELECT b.root_id,
-                COALESCE(SUM(b.eff_qty * COALESCE(comp.cost_price::float, 0)), 0)::float
-                  AS xomashyo_cost
-         FROM bom b
-         JOIN products comp ON comp.id = b.comp_id
-         WHERE NOT EXISTS (SELECT 1 FROM recipes r2 WHERE r2.product_id = b.comp_id)
-         GROUP BY b.root_id`,
-        [allCanonical],
-      );
-      for (const r of bomRows) xomashyoMap.set(Number(r.root_id), Number(r.xomashyo_cost));
-    }
+    // ── Steps 2+3: sell_price + recipe-walked xomashyo cost (shared service) ──
+    const costing = await costingForProducts(baseRows.map((r) => r.product_id));
 
     // ── Step 4: Merge and enrich ─────────────────────────────────────────────
     const enriched = baseRows.map((r) => {
-      // priceById holds sell_price from any same-named product (JS name-matched)
-      const sellPrice = priceById.get(r.product_id) ?? null;
-      const canonId = canonMap.get(r.product_id) ?? null;
-      const xomashyoCost = canonId != null ? (xomashyoMap.get(canonId) ?? null) : null;
+      const c = costing.get(r.product_id);
+      const sellPrice = c?.sell_price ?? null;
+      const xomashyoCost = c?.xomashyo_cost_per_unit ?? null;
       const totalXomashyoCost = xomashyoCost != null ? xomashyoCost * r.total_qty : null;
       const totalRevenue = sellPrice != null ? sellPrice * r.total_qty : null;
       // Foyda = Sotuv narxi − Xomashyo tan narxi − Ishlab chiqarish narxi

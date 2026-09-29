@@ -48,6 +48,7 @@ export const NAV_PATHS = [
   '/admin/import-warnings',
   // Hisobotlar
   '/hisobotlar/dokonlar-sotuvi',
+  '/hisobotlar/ishlab-chiqarish',
 ] as const;
 
 export type NavPath = (typeof NAV_PATHS)[number];

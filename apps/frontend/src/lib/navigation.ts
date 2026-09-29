@@ -357,6 +357,12 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         icon: Store,
         roles: ['super_admin', 'pm'],
       },
+      {
+        path: '/hisobotlar/ishlab-chiqarish',
+        label: 'Ishlab chiqarish',
+        icon: Factory,
+        roles: ['super_admin', 'pm'],
+      },
     ],
   },
 ];

@@ -19,30 +19,54 @@ import { loadConfig } from '../config/index.js';
 import { createPosterClientFromConfig } from '../integrations/poster/client.js';
 import { redactUrl } from '../integrations/poster/syncLog.js';
 import { buildStoreSalesReport } from '../services/storeSalesReport.js';
+import { buildProductionDailyReport, fetchPosterSupplies } from '../services/productionDailyReport.js';
 
 export const reportsRouter: Router = Router();
 
 /** Longest period one store-sales request may cover (Poster call volume). */
 const STORE_SALES_MAX_DAYS = 62;
 
+/** Validate ?from&to (YYYY-MM-DD, ordered, at most `maxDays`) and return them. */
+function parsePeriod(query: Record<string, unknown>, maxDays: number): { from: string; to: string } {
+  const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+  const from = typeof query.from === 'string' ? query.from : '';
+  const to = typeof query.to === 'string' ? query.to : '';
+  if (!datePattern.test(from) || !datePattern.test(to)) {
+    throw AppError.validation('"from" va "to" sanalari kerak (YYYY-MM-DD).');
+  }
+  if (from > to) {
+    throw AppError.validation("Boshlanish sanasi tugash sanasidan keyin bo'lishi mumkin emas.");
+  }
+  const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1;
+  if (days > maxDays) {
+    throw AppError.validation(`Bir so'rovda ko'pi bilan ${maxDays} kunlik davr tanlash mumkin.`);
+  }
+  return { from, to };
+}
+
+// GET /api/reports/production-daily?from&to — the production half of the
+// daily report for management (orders, output, cost/profit, otdels,
+// warehouses, supplier deliveries).
+reportsRouter.get(
+  '/production-daily',
+  authenticate,
+  authorize('pm', 'super_admin'),
+  asyncHandler(async (req, res) => {
+    const { from, to } = parsePeriod(req.query, STORE_SALES_MAX_DAYS);
+    const loadSupplies =
+      loadConfig().poster.token === ''
+        ? null
+        : () => fetchPosterSupplies(createPosterClientFromConfig(), from, to);
+    res.status(200).json(await buildProductionDailyReport(from, to, loadSupplies));
+  }),
+);
+
 reportsRouter.get(
   '/store-sales',
   authenticate,
   authorize('pm', 'super_admin'),
   asyncHandler(async (req, res) => {
-    const datePattern = /^\d{4}-\d{2}-\d{2}$/;
-    const from = typeof req.query.from === 'string' ? req.query.from : '';
-    const to = typeof req.query.to === 'string' ? req.query.to : '';
-    if (!datePattern.test(from) || !datePattern.test(to)) {
-      throw AppError.validation('"from" va "to" sanalari kerak (YYYY-MM-DD).');
-    }
-    if (from > to) {
-      throw AppError.validation("Boshlanish sanasi tugash sanasidan keyin bo'lishi mumkin emas.");
-    }
-    const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1;
-    if (days > STORE_SALES_MAX_DAYS) {
-      throw AppError.validation(`Bir so'rovda ko'pi bilan ${STORE_SALES_MAX_DAYS} kunlik davr tanlash mumkin.`);
-    }
+    const { from, to } = parsePeriod(req.query, STORE_SALES_MAX_DAYS);
     if (loadConfig().poster.token === '') {
       throw AppError.posterSync("Poster ulanmagan: serverda POSTER_TOKEN sozlanmagan.");
     }

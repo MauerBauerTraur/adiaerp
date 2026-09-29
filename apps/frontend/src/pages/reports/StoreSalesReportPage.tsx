@@ -3,6 +3,7 @@ import { Loader2, Printer } from 'lucide-react';
 import { EmptyState, ErrorState, PageHeader } from '@/components/PageState';
 import { Button } from '@/components/ui/button';
 import { useApiQuery } from '@/hooks/useApiQuery';
+import { ReportPeriodBar, fmtPeriod, localIsoDate } from './ReportPeriodBar';
 
 /**
  * "Do'konlar sotuvi" — each store's sales for a period, as Poster reports
@@ -51,17 +52,6 @@ const SIZE_LABELS: Record<(typeof SIZE_ORDER)[number], string> = {
 };
 const PAGE = 30;
 
-/** YYYY-MM-DD in the viewer's local calendar (toISOString would give the UTC day). */
-function localIsoDate(d: Date = new Date()): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-function shiftDays(iso: string, days: number): string {
-  const [y, m, d] = iso.split('-').map(Number);
-  return localIsoDate(new Date(y!, m! - 1, d! + days));
-}
-
-const fmtDay = (iso: string) => iso.split('-').reverse().join('.');
 const fmtSom = (n: number) => Math.round(n).toLocaleString('ru-RU');
 const fmtMln = (n: number) =>
   `${(n / 1_000_000).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} mln`;
@@ -106,7 +96,7 @@ export function groupCakes(items: readonly StoreSalesItem[]): CakeRow[] {
 function openPrint(report: StoreSalesReport) {
   const esc = (s: string) =>
     s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string));
-  const period = report.from === report.to ? fmtDay(report.from) : `${fmtDay(report.from)} — ${fmtDay(report.to)}`;
+  const period = fmtPeriod(report.from, report.to);
   const total = report.stores.reduce((s, x) => s + x.revenue, 0);
   const checks = report.stores.reduce((s, x) => s + x.checks, 0);
   const sections = report.stores
@@ -157,13 +147,6 @@ export function StoreSalesReportPage() {
     invalidRange ? null : `/api/reports/store-sales?from=${from}&to=${to}`,
   );
 
-  const monthStart = `${today.slice(0, 8)}01`;
-  const quick = [
-    { label: 'Bugun', from: today, to: today },
-    { label: 'Kecha', from: shiftDays(today, -1), to: shiftDays(today, -1) },
-    { label: '7 kun', from: shiftDays(today, -6), to: today },
-    { label: 'Shu oy', from: monthStart, to: today },
-  ];
   function setRange(f: string, t: string) {
     setFrom(f);
     setTo(t);
@@ -191,7 +174,7 @@ export function StoreSalesReportPage() {
   );
   const rowCount = view === 'poster' ? posterRows.length : cakeRows.length;
 
-  const period = from === to ? fmtDay(from) : `${fmtDay(from)} — ${fmtDay(to)}`;
+  const period = fmtPeriod(from, to);
 
   return (
     <div className="mx-auto max-w-6xl space-y-5">
@@ -208,46 +191,7 @@ export function StoreSalesReportPage() {
         }
       />
 
-      {/* Period */}
-      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card px-4 py-3">
-        <label htmlFor="ss-from" className="text-xs font-medium text-muted-foreground">Dan</label>
-        <input
-          id="ss-from"
-          type="date"
-          value={from}
-          onChange={(e) => e.target.value && setRange(e.target.value, to)}
-          className="h-8 rounded-lg border border-border bg-background px-2 text-sm"
-        />
-        <label htmlFor="ss-to" className="text-xs font-medium text-muted-foreground">Gacha</label>
-        <input
-          id="ss-to"
-          type="date"
-          value={to}
-          onChange={(e) => e.target.value && setRange(from, e.target.value)}
-          className="h-8 rounded-lg border border-border bg-background px-2 text-sm"
-        />
-        <div className="flex flex-wrap gap-1.5">
-          {quick.map((q) => (
-            <button
-              key={q.label}
-              type="button"
-              onClick={() => setRange(q.from, q.to)}
-              className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                from === q.from && to === q.to
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground'
-              }`}
-            >
-              {q.label}
-            </button>
-          ))}
-        </div>
-        {invalidRange && (
-          <p className="basis-full text-xs text-destructive">
-            "Dan" sanasi "Gacha" sanasidan keyin bo'lmasligi kerak.
-          </p>
-        )}
-      </div>
+      <ReportPeriodBar from={from} to={to} today={today} onChange={setRange} />
 
       {isLoading && (
         <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
