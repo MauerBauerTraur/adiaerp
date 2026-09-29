@@ -247,6 +247,36 @@ export type PosterPaymentReport = {
  * `data` is the per-interval series (one entry per day when
  * `interpolate=day`). Values are decimal strings ("31059707.0000").
  */
+/**
+ * `dash.getSpotsSales` with a `spot_id` — one spot's totals for a period.
+ * Money is already in so'm here (unlike line-level `payed_sum`, which is in
+ * tiyin); `clients` is the number of receipts.
+ */
+export type PosterSpotSales = {
+  revenue: number | string;
+  profit: number | string;
+  profit_netto?: number | string;
+  clients: number | string;
+  middle_invoice?: number | string;
+};
+
+/**
+ * One row of `dash.getProductsSales` — what Poster's "Товары" report shows:
+ * a product, optionally split by modifier (КУСОК / ПОЛОВИНА / ЦЕЛЫЙ,
+ * "Рулет 6-шт", …). `payed_sum` / `product_profit` are in tiyin.
+ */
+export type PosterProductSalesRow = {
+  product_id: string;
+  product_name: string;
+  modification_id?: string;
+  modificator_name?: string | null;
+  count: string;
+  /** "p" = pieces, "kg" = weighed. */
+  unit?: string;
+  payed_sum: string;
+  product_profit: string;
+};
+
 export type PosterAnalyticsCounters = {
   revenue?: string | number;
   profit?: string | number;
@@ -597,6 +627,33 @@ export class PosterClient {
     if (params.spotId !== undefined) qs.spot_id = String(params.spotId);
     const r = await this.call<PosterAnalytics>('dash.getAnalytics', qs);
     return r ?? {};
+  }
+
+  /** `dash.getSpotsSales` for one spot — its revenue/profit/receipts for a period. */
+  async getSpotsSales(params: {
+    dateFrom: string; // YYYYMMDD
+    dateTo: string; // YYYYMMDD
+    spotId: number;
+  }): Promise<PosterSpotSales | null> {
+    return this.call<PosterSpotSales>('dash.getSpotsSales', {
+      dateFrom: params.dateFrom,
+      dateTo: params.dateTo,
+      spot_id: String(params.spotId),
+    });
+  }
+
+  /** `dash.getProductsSales` for one spot — Poster's "Товары" report rows. */
+  async getProductsSales(params: {
+    dateFrom: string; // YYYYMMDD
+    dateTo: string; // YYYYMMDD
+    spotId: number;
+  }): Promise<PosterProductSalesRow[]> {
+    const r = await this.call<PosterProductSalesRow[]>('dash.getProductsSales', {
+      dateFrom: params.dateFrom,
+      dateTo: params.dateTo,
+      spot_id: String(params.spotId),
+    });
+    return r ?? [];
   }
 
   async getTransaction(transactionId: number): Promise<PosterTransactionFull | null> {

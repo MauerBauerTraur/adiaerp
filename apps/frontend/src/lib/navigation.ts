@@ -25,6 +25,7 @@ import {
   Coffee,
   ShoppingBag,
   FlaskConical,
+  FileChartColumn,
   type LucideIcon,
 } from 'lucide-react';
 import type { Role } from './types';
@@ -44,7 +45,8 @@ export type NavGroupKey =
   | 'forecasts'
   | 'modules'
   | 'production-ops'
-  | 'reference';
+  | 'reference'
+  | 'reports';
 
 /**
  * Role-scoped navigation. Each item is visible only to the listed roles —
@@ -337,6 +339,22 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         path: '/admin/import-warnings',
         label: 'Import xatolari',
         icon: AlertCircle,
+        roles: ['super_admin', 'pm'],
+      },
+    ],
+  },
+  {
+    // Kunlik hisobotlar — rahbariyatga topshirish uchun (PM / super_admin).
+    key: 'reports',
+    label: 'Hisobotlar',
+    icon: FileChartColumn,
+    defaultPath: '/hisobotlar/dokonlar-sotuvi',
+    hasTabs: true,
+    items: [
+      {
+        path: '/hisobotlar/dokonlar-sotuvi',
+        label: "Do'konlar sotuvi",
+        icon: Store,
         roles: ['super_admin', 'pm'],
       },
     ],

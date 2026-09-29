@@ -46,6 +46,8 @@ export const NAV_PATHS = [
   '/locations',
   '/employees',
   '/admin/import-warnings',
+  // Hisobotlar
+  '/hisobotlar/dokonlar-sotuvi',
 ] as const;
 
 export type NavPath = (typeof NAV_PATHS)[number];

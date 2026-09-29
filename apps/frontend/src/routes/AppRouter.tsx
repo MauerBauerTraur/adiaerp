@@ -36,6 +36,7 @@ import { SafeExpensesPage } from '@/pages/cashier/SafeExpensesPage';
 import { NakladnoyPage } from '@/pages/cashier/NakladnoyPage';
 import { PosterSuppliesPage } from '@/pages/poster-supplies/PosterSuppliesPage';
 import { ProfitReportPage } from '@/pages/reports/ProfitReportPage';
+import { StoreSalesReportPage } from '@/pages/reports/StoreSalesReportPage';
 import { StockReportPage } from '@/pages/stock/StockReportPage';
 import { TransferPage } from '@/pages/stock/TransferPage';
 import { ZagotovkaPage } from '@/pages/production-orders/ZagotovkaPage';
@@ -328,6 +329,16 @@ export function AppRouter() {
           element={
             <RoleRoute allow={['super_admin', 'pm', 'raw_warehouse_manager']}>
               <PosterSuppliesPage />
+            </RoleRoute>
+          }
+        />
+
+        {/* Hisobotlar — daily reports for management (PM/super_admin). */}
+        <Route
+          path="/hisobotlar/dokonlar-sotuvi"
+          element={
+            <RoleRoute allow={['super_admin', 'pm']}>
+              <StoreSalesReportPage />
             </RoleRoute>
           }
         />

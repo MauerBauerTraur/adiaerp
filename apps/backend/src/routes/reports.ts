@@ -5,6 +5,9 @@
  *     ?from=YYYY-MM-DD&to=YYYY-MM-DD (required)
  *     Returns production orders (status='done') in the date range grouped
  *     by product, with cost_price, production_cost, sell_price, foyda, sof_foyda.
+ *
+ *   GET /api/reports/store-sales — "Do'konlar sotuvi", each store's sales
+ *     ?from=YYYY-MM-DD&to=YYYY-MM-DD (required), read from Poster's reports.
  */
 import { Router } from 'express';
 import { query } from '../db/index.js';
@@ -12,8 +15,46 @@ import { AppError } from '../errors/index.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
+import { loadConfig } from '../config/index.js';
+import { createPosterClientFromConfig } from '../integrations/poster/client.js';
+import { redactUrl } from '../integrations/poster/syncLog.js';
+import { buildStoreSalesReport } from '../services/storeSalesReport.js';
 
 export const reportsRouter: Router = Router();
+
+/** Longest period one store-sales request may cover (Poster call volume). */
+const STORE_SALES_MAX_DAYS = 62;
+
+reportsRouter.get(
+  '/store-sales',
+  authenticate,
+  authorize('pm', 'super_admin'),
+  asyncHandler(async (req, res) => {
+    const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+    const from = typeof req.query.from === 'string' ? req.query.from : '';
+    const to = typeof req.query.to === 'string' ? req.query.to : '';
+    if (!datePattern.test(from) || !datePattern.test(to)) {
+      throw AppError.validation('"from" va "to" sanalari kerak (YYYY-MM-DD).');
+    }
+    if (from > to) {
+      throw AppError.validation("Boshlanish sanasi tugash sanasidan keyin bo'lishi mumkin emas.");
+    }
+    const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1;
+    if (days > STORE_SALES_MAX_DAYS) {
+      throw AppError.validation(`Bir so'rovda ko'pi bilan ${STORE_SALES_MAX_DAYS} kunlik davr tanlash mumkin.`);
+    }
+    if (loadConfig().poster.token === '') {
+      throw AppError.posterSync("Poster ulanmagan: serverda POSTER_TOKEN sozlanmagan.");
+    }
+    try {
+      res.status(200).json(await buildStoreSalesReport(createPosterClientFromConfig(), from, to));
+    } catch (err) {
+      if (err instanceof AppError) throw err;
+      const detail = redactUrl(err instanceof Error ? err.message : String(err));
+      throw AppError.posterSync(`Poster'dan sotuv ma'lumotini olib bo'lmadi: ${detail}`);
+    }
+  }),
+);
 
 reportsRouter.get(
   '/profit',
